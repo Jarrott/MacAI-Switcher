@@ -1,0 +1,14 @@
+.build/
+.DS_Store
+**/.DS_Store
+*.switcher-bak
+
+# Local runtime databases and SQLite sidecars
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# Local Claude Code permissions and built app bundles
+.claude/settings.local.json
+*.app/

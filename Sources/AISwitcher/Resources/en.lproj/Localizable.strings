@@ -1,0 +1,112 @@
+/* AI Switcher — English */
+
+"app.name" = "AI Switcher";
+
+/* Trial banner */
+"trial.remaining" = "Trial: %@ remaining";
+"trial.days_hours_minutes" = "%dd %dh %dm";
+
+/* Persisted accumulated runtime */
+"runtime.elapsed" = "Total runtime: %@";
+"runtime.days_hours_minutes" = "%dd %dh %dm";
+"runtime.hours_minutes" = "%dh %dm";
+"runtime.minutes" = "%dm";
+
+/* Account card */
+"card.window.5h" = "5h";
+"card.window.7d" = "7d";
+"card.percent.unknown" = "--%%";
+"card.reset.unknown" = "--";
+"card.resets_available" = "%d resets available";
+"card.resets_available.one" = "1 reset available";
+"card.resets_unavailable" = "Reset availability unavailable";
+"card.active" = "Active account";
+"card.reset.confirm.hint" = "Opens a confirmation before using one reset credit";
+"card.reset.confirm.title" = "Use a reset credit?";
+"card.reset.confirm.message" = "This will immediately consume 1 reset credit for %@ and reset eligible Codex usage limits. This action cannot be undone.";
+"card.reset.confirm.action" = "Confirm Reset";
+"card.reset.confirm.cancel" = "Cancel Reset";
+"card.reset.dismiss" = "OK";
+"card.reset.success.title" = "Reset completed";
+"card.reset.success.message" = "One reset credit was consumed. Usage has been refreshed.";
+"card.reset.already_redeemed" = "This reset request was already completed. Usage has been refreshed without consuming it again.";
+"card.reset.not_used.title" = "Reset not used";
+"card.reset.nothing_to_reset" = "No eligible usage limit currently needs resetting, so no credit was consumed.";
+"card.reset.no_credit" = "No reset credit is currently available. The displayed account data has been refreshed.";
+"card.reset.wrong_provider" = "The provider rejected this account for Codex limit reset.";
+"card.reset.error.title" = "Reset failed";
+"card.reset.error.message" = "No success was assumed. Provider response: %@";
+
+/* Menu actions */
+"menu.add_account" = "Add Account";
+"menu.account_settings" = "Account Settings";
+"menu.launch_at_login" = "Launch at Login";
+"menu.restore_purchase" = "Restore Purchase";
+"menu.buy" = "Buy AI Switcher";
+"menu.quit" = "Quit AI Switcher";
+"menu.refresh" = "Refresh Now";
+"menu.refreshing" = "Refreshing…";
+"menu.no_accounts" = "No accounts configured";
+
+/* Add account */
+"add_account.title" = "Add Account";
+"add_account.login_instructions" = "Browser sign-in runs the installed provider CLI and automatically imports its credential when OAuth finishes. The command below remains available as a manual fallback.";
+"add_account.copy_command" = "Copy";
+"add_account.open_terminal" = "Open Terminal";
+"add_account.browser_login" = "Sign In with Browser";
+"add_account.browser_waiting" = "Complete sign-in in your browser…";
+"add_account.browser_no_credential" = "Sign-in finished, but no usable CLI credential was found.";
+"add_account.browser_cli_missing" = "The selected provider CLI is not installed or could not be found.";
+"add_account.browser_launch_failed" = "The browser sign-in process could not be started.";
+"add_account.browser_runtime_missing" = "The provider CLI runtime could not be found. Check your Node installation.";
+"add_account.browser_staging_failed" = "A protected temporary sign-in workspace could not be created.";
+"add_account.browser_failed" = "Browser sign-in failed before completion (exit code %d).";
+"add_account.browser_cancelled" = "Browser sign-in was cancelled.";
+"add_account.browser_restored" = "Your previous account is still signed in.";
+"add_account.browser_restore_failed" = "Browser sign-in failed and the previous account could not be restored. Activate it again from Account Settings.";
+"add_account.import_current" = "Import Current Login";
+"add_account.import_file" = "Import Credential File…";
+"add_account.importing" = "Validating and refreshing account…";
+"add_account.no_current_login" = "No usable current login was found for this provider.";
+"add_account.file_picker_title" = "Choose a Credential JSON File";
+"add_account.added" = "Added %@.";
+"add_account.updated" = "Updated %@.";
+"add_account.command_copied" = "Login command copied. Paste it into Terminal.";
+"add_account.terminal_failed" = "Terminal could not be opened.";
+"add_account.error.unreadable_file" = "The selected file could not be read.";
+"add_account.error.invalid_credential" = "The selected file is not a valid credential for this provider.";
+"add_account.error.missing_identity" = "The credential does not contain an account identity.";
+"add_account.error.snapshot_failed" = "The credential could not be stored securely.";
+"add_account.error.activation_failed" = "The credential was saved but could not be activated. Your previous account is still signed in.";
+
+/* Settings window */
+"settings.title" = "Account Settings";
+"settings.language" = "Language";
+"settings.provider" = "Provider";
+"settings.accounts" = "Accounts";
+"settings.no_accounts_title" = "No Accounts";
+"settings.no_accounts" = "No accounts yet. Log in with the CLI, then choose Add Account.";
+"settings.import_current" = "Import Current Login";
+"settings.manage_accounts" = "Manage Accounts…";
+"settings.account_name" = "Account name";
+"settings.activate" = "Activate";
+"settings.remove" = "Remove";
+"settings.remove_active_help" = "Activate another account before removing this one.";
+"settings.remove_confirm_title" = "Remove Account?";
+"settings.remove_confirm_message" = "Remove %@ and its saved credential snapshot? This cannot be undone.";
+"settings.cancel" = "Cancel";
+"settings.done" = "Done";
+
+/* Languages */
+"lang.system" = "System";
+
+/* Providers */
+"provider.codex" = "Codex";
+"provider.claude" = "Claude";
+"claude.auth.missing" = "Claude credential snapshot is unavailable. Import the current login.";
+"claude.auth.login_required" = "Claude login could not be renewed. Import the current login or sign in again.";
+"claude.auth.network" = "Claude authentication service could not be reached. Try refreshing later.";
+"claude.auth.refresh_http" = "Claude token refresh failed (HTTP %d). Try refreshing later.";
+"claude.auth.invalid_response" = "Claude returned an invalid token refresh response.";
+"claude.auth.persistence" = "Could not save Claude credentials. Check Keychain access and file permissions.";
+"claude.auth.changed" = "Claude credentials changed during refresh. Refresh again.";

@@ -1,0 +1,112 @@
+/* AI Switcher — 简体中文 */
+
+"app.name" = "AI 切换器";
+
+/* 试用横幅 */
+"trial.remaining" = "试用：剩余 %@";
+"trial.days_hours_minutes" = "%d天 %d小时 %d分";
+
+/* 软件运行时间 */
+"runtime.elapsed" = "累计运行：%@";
+"runtime.days_hours_minutes" = "%d天 %d小时 %d分";
+"runtime.hours_minutes" = "%d小时 %d分";
+"runtime.minutes" = "%d分";
+
+/* 账号卡片 */
+"card.window.5h" = "5小时";
+"card.window.7d" = "7天";
+"card.percent.unknown" = "--%%";
+"card.reset.unknown" = "--";
+"card.resets_available" = "剩余 %d 次重置";
+"card.resets_available.one" = "剩余 1 次重置";
+"card.resets_unavailable" = "重置次数暂不可用";
+"card.active" = "当前账号";
+"card.reset.confirm.hint" = "使用重置额度前会先显示确认提醒";
+"card.reset.confirm.title" = "确认使用重置额度？";
+"card.reset.confirm.message" = "这会立即消耗 %@ 的 1 次重置额度，并重置当前符合条件的 Codex 用量限制。此操作无法撤销。";
+"card.reset.confirm.action" = "确认重置";
+"card.reset.confirm.cancel" = "取消重置";
+"card.reset.dismiss" = "好";
+"card.reset.success.title" = "重置完成";
+"card.reset.success.message" = "已消耗 1 次重置额度，并刷新最新用量。";
+"card.reset.already_redeemed" = "本次重置请求此前已完成；已刷新用量，不会重复消耗额度。";
+"card.reset.not_used.title" = "未使用重置额度";
+"card.reset.nothing_to_reset" = "当前没有符合条件的用量限制需要重置，因此没有消耗额度。";
+"card.reset.no_credit" = "当前已没有可用的重置额度，界面数据已刷新。";
+"card.reset.wrong_provider" = "服务商拒绝为此账号执行 Codex 用量重置。";
+"card.reset.error.title" = "重置失败";
+"card.reset.error.message" = "未将本次请求视为成功。服务商返回：%@";
+
+/* 菜单操作 */
+"menu.add_account" = "添加账号";
+"menu.account_settings" = "账号设置";
+"menu.launch_at_login" = "登录时启动";
+"menu.restore_purchase" = "恢复购买";
+"menu.buy" = "购买 AI 切换器";
+"menu.quit" = "退出 AI 切换器";
+"menu.refresh" = "立即刷新";
+"menu.refreshing" = "正在刷新…";
+"menu.no_accounts" = "尚未配置账号";
+
+/* 添加账号 */
+"add_account.title" = "添加账号";
+"add_account.login_instructions" = "浏览器登录会调用已安装的服务商 CLI；OAuth 完成后将自动导入凭据。下方命令保留为手动登录备用方式。";
+"add_account.copy_command" = "复制";
+"add_account.open_terminal" = "打开终端";
+"add_account.browser_login" = "使用浏览器登录";
+"add_account.browser_waiting" = "请在浏览器中完成登录…";
+"add_account.browser_no_credential" = "登录流程已结束，但未检测到可用的 CLI 凭据。";
+"add_account.browser_cli_missing" = "未安装或无法找到所选服务商的 CLI。";
+"add_account.browser_launch_failed" = "无法启动浏览器登录流程。";
+"add_account.browser_runtime_missing" = "无法找到服务商 CLI 所需的运行环境，请检查 Node 安装。";
+"add_account.browser_staging_failed" = "无法创建受保护的临时登录空间。";
+"add_account.browser_failed" = "浏览器登录在完成前失败（退出代码 %d）。";
+"add_account.browser_cancelled" = "浏览器登录已取消。";
+"add_account.browser_restored" = "原账号已保持登录。";
+"add_account.browser_restore_failed" = "浏览器登录失败，且无法恢复原账号。请在账号设置中重新切换该账号。";
+"add_account.import_current" = "导入当前登录";
+"add_account.import_file" = "导入凭据文件…";
+"add_account.importing" = "正在验证并刷新账号…";
+"add_account.no_current_login" = "未检测到该服务商可用的当前登录。";
+"add_account.file_picker_title" = "选择凭据 JSON 文件";
+"add_account.added" = "已添加 %@。";
+"add_account.updated" = "已更新 %@。";
+"add_account.command_copied" = "登录命令已复制，请粘贴到终端中执行。";
+"add_account.terminal_failed" = "无法打开终端。";
+"add_account.error.unreadable_file" = "无法读取所选文件。";
+"add_account.error.invalid_credential" = "所选文件不是该服务商的有效凭据。";
+"add_account.error.missing_identity" = "凭据中没有账号标识。";
+"add_account.error.snapshot_failed" = "无法安全保存该凭据。";
+"add_account.error.activation_failed" = "凭据已保存但无法切换，原账号仍保持登录。";
+
+/* 设置窗口 */
+"settings.title" = "账号设置";
+"settings.language" = "语言";
+"settings.provider" = "服务商";
+"settings.accounts" = "账号";
+"settings.no_accounts_title" = "暂无账号";
+"settings.no_accounts" = "暂无账号。请先用 CLI 登录，然后选择“添加账号”。";
+"settings.import_current" = "导入当前登录";
+"settings.manage_accounts" = "管理账号…";
+"settings.account_name" = "账号名称";
+"settings.activate" = "切换";
+"settings.remove" = "移除";
+"settings.remove_active_help" = "请先切换到其他账号，再移除此账号。";
+"settings.remove_confirm_title" = "移除账号？";
+"settings.remove_confirm_message" = "是否移除 %@ 及其保存的凭据快照？此操作无法撤销。";
+"settings.cancel" = "取消";
+"settings.done" = "完成";
+
+/* 语言 */
+"lang.system" = "跟随系统";
+
+/* 服务商 */
+"provider.codex" = "Codex";
+"provider.claude" = "Claude";
+"claude.auth.missing" = "Claude 凭证快照不可用，请导入当前登录。";
+"claude.auth.login_required" = "Claude 登录续期失败，请导入当前登录或重新登录。";
+"claude.auth.network" = "无法连接 Claude 认证服务，请稍后刷新。";
+"claude.auth.refresh_http" = "Claude 令牌刷新失败（HTTP %d），请稍后刷新。";
+"claude.auth.invalid_response" = "Claude 返回的令牌刷新数据无效。";
+"claude.auth.persistence" = "无法保存 Claude 凭证，请检查钥匙串访问权限和文件权限。";
+"claude.auth.changed" = "Claude 凭证在刷新期间发生变化，请再次刷新。";
