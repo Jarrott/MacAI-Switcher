@@ -4,7 +4,9 @@ A native macOS menu bar app that switches between multiple AI accounts and shows
 their usage limits — a clone of "Codex Switcher", extended to support **Claude**
 in addition to **Codex/OpenAI**, with **English + 简体中文** localization.
 
-![reference UI](docs/reference.png)
+<p align="center">
+  <img src="docs/images/menu-preview.png" alt="AI Switcher menu bar dropdown showing Codex and Claude accounts with usage bars" width="420">
+</p>
 
 ## Features
 
