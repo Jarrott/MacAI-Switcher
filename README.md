@@ -60,6 +60,16 @@ Account switching means snapshotting each account's credential into
 chosen snapshot back to the live location. Credential files are written atomically
 with owner-only (`0600`) permissions.
 
+Codex CLI 0.159.0 can attach new terminals to an already-running shared server
+whose cached login differs from that file. For account switching with local zsh
+terminals, use the optional [Codex shell integration](docs/CODEX_TERMINALS.md),
+which launches interactive sessions with `--no-daemon`. Existing sessions still
+need a separate, idle-only restart; the switcher does not hot-swap running sessions.
+For the 0.159.0 `/status` email-display regression, see the optional
+[version-specific client repair](docs/CODEX_STATUS_EMAIL.md).
+The same private client can provide [rounded input styling and AI request
+suggestions](docs/CODEX_INPUT.md), with explicit Tab acceptance and an opt-out.
+
 Claude token renewal saves the new credential before retrying usage and never
 reuses a refresh token that it already exchanged in the same request. Newer live
 credentials are adopted only when token continuity proves they belong to the saved

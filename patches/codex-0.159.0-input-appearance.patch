@@ -1,0 +1,509 @@
+--- a/codex-rs/tui/src/bottom_pane/chat_composer.rs
++++ b/codex-rs/tui/src/bottom_pane/chat_composer.rs
+@@ -374,6 +374,7 @@
+ use codex_protocol::user_input::TextElement;
+ 
+ mod agents_navigation;
++mod appearance;
+ mod attachment_state;
+ mod completion_target;
+ mod composer_layout;
+@@ -4602,6 +4603,9 @@
+         self.render_with_options(area, buf, mask_char, ComposerRenderOptions::default());
+     }
+ 
++    /// Paints the draft, attachments, suggestions and footer in `area` using `options`.
++    /// Input colors adapt to the detected terminal palette; optional masking only
++    /// changes rendering. Geometry is shared with cursor and height calculations.
+     pub(crate) fn render_with_options(
+         &self,
+         area: Rect,
+@@ -4922,7 +4926,8 @@
+         if let Some((warning_area, line)) = warning_notice {
+             line.render(warning_area, buf);
+         }
+-        let style = user_message_style();
++        let appearance = appearance::composer_appearance();
++        let style = appearance.surface;
+         Block::default().style(style).render(composer_rect, buf);
+         if !remote_images_rect.is_empty() {
+             Paragraph::new(self.attachments.remote_image_lines())
+@@ -5005,7 +5010,7 @@
+                     .to_string()
+             };
+             if !textarea_rect.is_empty() {
+-                let placeholder = Span::from(text).dim();
++                let placeholder = Span::styled(text, appearance.placeholder);
+                 Line::from(vec![placeholder]).render(textarea_rect.inner(Margin::new(0, 0)), buf);
+             }
+         }
+@@ -5049,6 +5054,10 @@
+ mod agents_navigation_tests;
+ 
+ #[cfg(test)]
++#[path = "chat_composer/appearance_tests.rs"]
++mod appearance_tests;
++
++#[cfg(test)]
+ #[path = "chat_composer_effort_tests.rs"]
+ mod effort_tests;
+ 
+@@ -5132,7 +5141,7 @@
+ 
+             assert_eq!(
+                 buffer[(0, 1)].bg,
+-                crate::terminal_palette::rgb_color((244, 244, 244))
++                crate::terminal_palette::rgb_color((247, 247, 247))
+             );
+             insta::assert_snapshot!("light_terminal_palette_composer", format!("{buffer:?}"));
+         });
+--- /dev/null
++++ b/codex-rs/tui/src/bottom_pane/chat_composer/appearance.rs
+@@ -0,0 +1,42 @@
++//! Subtle composer-only fills and readable placeholder text; transcript colors stay independent.
++
++use crate::color::blend;
++use crate::color::is_light;
++use crate::style::readable_color_on;
++use crate::style::secondary_text_style;
++use crate::terminal_palette::best_color;
++use crate::terminal_palette::default_bg;
++use ratatui::style::Color;
++use ratatui::style::Style;
++
++pub(super) struct ComposerAppearance {
++    pub(super) surface: Style,
++    pub(super) placeholder: Style,
++}
++
++/// Resolves a quiet input fill and readable hint against the detected terminal palette.
++/// Unknown backgrounds retain the original unpainted surface and dim hint; known
++/// backgrounds use the existing color-depth and contrast helpers. This only returns
++/// rendering styles and never changes the terminal palette, input, or configuration.
++pub(super) fn composer_appearance() -> ComposerAppearance {
++    let Some(background) = default_bg() else {
++        return ComposerAppearance {
++            surface: Style::default(),
++            placeholder: Style::default().dim(),
++        };
++    };
++    let (foreground, alpha) = if is_light(background) {
++        ((0, 0, 0), 0.03)
++    } else {
++        ((255, 255, 255), 0.09)
++    };
++    let surface = Style::default().bg(best_color(blend(foreground, background, alpha)));
++    let placeholder = secondary_text_style();
++    ComposerAppearance {
++        surface,
++        placeholder: placeholder.fg(readable_color_on(
++            placeholder.fg.unwrap_or(Color::Reset),
++            surface.bg,
++        )),
++    }
++}
+--- /dev/null
++++ b/codex-rs/tui/src/bottom_pane/chat_composer/appearance_tests.rs
+@@ -0,0 +1,49 @@
++//! Input color and wrapping snapshots on light and dark terminal palettes.
++
++use super::tests::new_test_composer;
++use crate::render::renderable::Renderable;
++use crate::terminal_palette::with_test_default_colors;
++use crate::terminal_probe::DefaultColors;
++use ratatui::buffer::Buffer;
++use ratatui::layout::Rect;
++
++#[test]
++fn refined_input_palette_and_wrapping_snapshots() {
++    for (theme, colors) in [
++        (
++            "dark",
++            DefaultColors {
++                fg: (232, 234, 237),
++                bg: (24, 26, 31),
++            },
++        ),
++        (
++            "light",
++            DefaultColors {
++                fg: (55, 57, 59),
++                bg: (250, 250, 250),
++            },
++        ),
++    ] {
++        with_test_default_colors(colors, || {
++            for (state, width, text) in [
++                ("empty", 48, ""),
++                ("chinese", 48, "整理一下这段代码，让命名更清楚。"),
++                ("wrapped", 16, "Keep the input calm and readable."),
++            ] {
++                let (mut composer, _rx) = new_test_composer();
++                composer.set_text_content(text.to_owned(), Vec::new(), Vec::new());
++                composer.move_cursor_to_end();
++                let area = Rect::new(0, 0, width, composer.desired_height(width));
++                let mut buffer = Buffer::empty(area);
++                composer.render(area, &mut buffer);
++                let (x, y) = composer.cursor_pos(area).expect("enabled input cursor");
++                assert!(x < width - 2 && y < area.height);
++                insta::assert_snapshot!(
++                    format!("refined_input_{theme}_{state}"),
++                    format!("{buffer:?}")
++                );
++            }
++        });
++    }
++}
+--- a/codex-rs/tui/src/bottom_pane/chat_composer/composer_layout.rs
++++ b/codex-rs/tui/src/bottom_pane/chat_composer/composer_layout.rs
+@@ -7,6 +7,9 @@
+ use crate::tui::FrameRequester;
+ use ratatui::buffer::Buffer;
+ use ratatui::layout::Rect;
++
++// Match the two-column input prefix without changing its alignment.
++const TEXTAREA_RIGHT_PADDING: u16 = 2;
+ 
+ impl ChatComposer {
+     pub(crate) fn set_voice_strip(
+@@ -36,6 +39,9 @@
+ }
+ 
+ impl ChatComposer {
++    /// Allocates the visible input, attachments, suggestions and footer within `area`.
++    /// The input's right padding matches height measurement, including any extra
++    /// reserved columns in `options`, so wrapping and cursor positions stay aligned.
+     pub(super) fn layout_with_options(
+         &self,
+         area: Rect,
+@@ -108,7 +114,7 @@
+             /*top*/ 1 + voice_rows,
+             LIVE_PREFIX_COLS,
+             /*bottom*/ 1,
+-            /*right*/ 1u16.saturating_add(options.textarea_right_reserve),
++            /*right*/ TEXTAREA_RIGHT_PADDING.saturating_add(options.textarea_right_reserve),
+         ));
+         let remote_images_height = self
+             .attachments
+@@ -167,13 +173,15 @@
+             .cursor_pos_with_state(layout.textarea, state)
+     }
+ 
++    /// Measures the draft and surrounding rows at `width` using the same input
++    /// padding as layout. Narrow widths saturate safely before text measurement.
+     pub(crate) fn desired_height_with_options(
+         &self,
+         width: u16,
+         options: ComposerRenderOptions<'_>,
+     ) -> u16 {
+         let footer_hint_height = self.footer_hint_height(width, options);
+-        const COLS_WITH_MARGIN: u16 = LIVE_PREFIX_COLS + 1;
++        const COLS_WITH_MARGIN: u16 = LIVE_PREFIX_COLS + TEXTAREA_RIGHT_PADDING;
+         let inner_width =
+             width.saturating_sub(COLS_WITH_MARGIN.saturating_add(options.textarea_right_reserve));
+         let remote_images_height: u16 = self
+--- /dev/null
++++ b/codex-rs/tui/src/bottom_pane/chat_composer/snapshots/codex_tui__bottom_pane__chat_composer__appearance_tests__refined_input_dark_chinese.snap
+@@ -0,0 +1,54 @@
++---
++source: tui/src/bottom_pane/chat_composer/appearance_tests.rs
++assertion_line: 42
++expression: "format!(\"{buffer:?}\")"
++---
++Buffer {
++    area: Rect { x: 0, y: 0, width: 48, height: 4 },
++    content: [
++        "                                                ",
++        "› 整理一下这段代码，让命名更清楚。              ", // hidden by multi-width symbols: [(3, " "), (5, " "), (7, " "), (9, " "), (11, " "), (13, " "), (15, " "), (17, " "), (19, " "), (21, " "), (23, " "), (25, " "), (27, " "), (29, " "), (31, " "), (33, " ")]
++        "                                                ",
++        "                             100% context left  ",
++    ],
++    styles: [
++        x: 0, y: 0, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 0, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: BOLD,
++        x: 1, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 3, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 4, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 5, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 6, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 7, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 8, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 9, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 10, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 11, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 12, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 13, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 14, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 15, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 16, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 17, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 18, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 19, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 20, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 21, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 22, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 23, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 24, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 25, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 26, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 27, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 28, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 29, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 30, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 31, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 32, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 33, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 34, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 0, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 29, y: 3, fg: Rgb(148, 150, 154), bg: Reset, underline: Reset, modifier: NONE,
++        x: 46, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++    ]
++}
+--- /dev/null
++++ b/codex-rs/tui/src/bottom_pane/chat_composer/snapshots/codex_tui__bottom_pane__chat_composer__appearance_tests__refined_input_dark_empty.snap
+@@ -0,0 +1,27 @@
++---
++source: tui/src/bottom_pane/chat_composer/appearance_tests.rs
++assertion_line: 42
++expression: "format!(\"{buffer:?}\")"
++---
++Buffer {
++    area: Rect { x: 0, y: 0, width: 48, height: 4 },
++    content: [
++        "                                                ",
++        "› Ask Codex to do anything                      ",
++        "                                                ",
++        "  ? for shortcuts            100% context left  ",
++    ],
++    styles: [
++        x: 0, y: 0, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 0, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: BOLD,
++        x: 1, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 2, y: 1, fg: Rgb(148, 150, 154), bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 26, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 0, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 2, y: 3, fg: Rgb(232, 234, 237), bg: Reset, underline: Reset, modifier: BOLD,
++        x: 3, y: 3, fg: Rgb(148, 150, 154), bg: Reset, underline: Reset, modifier: NONE,
++        x: 17, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 29, y: 3, fg: Rgb(148, 150, 154), bg: Reset, underline: Reset, modifier: NONE,
++        x: 46, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++    ]
++}
+--- /dev/null
++++ b/codex-rs/tui/src/bottom_pane/chat_composer/snapshots/codex_tui__bottom_pane__chat_composer__appearance_tests__refined_input_dark_wrapped.snap
+@@ -0,0 +1,24 @@
++---
++source: tui/src/bottom_pane/chat_composer/appearance_tests.rs
++assertion_line: 42
++expression: "format!(\"{buffer:?}\")"
++---
++Buffer {
++    area: Rect { x: 0, y: 0, width: 16, height: 7 },
++    content: [
++        "                ",
++        "› Keep the      ",
++        "  input calm    ",
++        "  and           ",
++        "  readable.     ",
++        "                ",
++        "  100% context l",
++    ],
++    styles: [
++        x: 0, y: 0, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 0, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: BOLD,
++        x: 1, y: 1, fg: Reset, bg: Rgb(44, 46, 51), underline: Reset, modifier: NONE,
++        x: 0, y: 6, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 2, y: 6, fg: Rgb(148, 150, 154), bg: Reset, underline: Reset, modifier: NONE,
++    ]
++}
+--- /dev/null
++++ b/codex-rs/tui/src/bottom_pane/chat_composer/snapshots/codex_tui__bottom_pane__chat_composer__appearance_tests__refined_input_light_chinese.snap
+@@ -0,0 +1,54 @@
++---
++source: tui/src/bottom_pane/chat_composer/appearance_tests.rs
++assertion_line: 42
++expression: "format!(\"{buffer:?}\")"
++---
++Buffer {
++    area: Rect { x: 0, y: 0, width: 48, height: 4 },
++    content: [
++        "                                                ",
++        "› 整理一下这段代码，让命名更清楚。              ", // hidden by multi-width symbols: [(3, " "), (5, " "), (7, " "), (9, " "), (11, " "), (13, " "), (15, " "), (17, " "), (19, " "), (21, " "), (23, " "), (25, " "), (27, " "), (29, " "), (31, " "), (33, " ")]
++        "                                                ",
++        "                             100% context left  ",
++    ],
++    styles: [
++        x: 0, y: 0, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 0, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: BOLD,
++        x: 1, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 3, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 4, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 5, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 6, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 7, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 8, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 9, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 10, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 11, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 12, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 13, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 14, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 15, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 16, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 17, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 18, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 19, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 20, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 21, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 22, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 23, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 24, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 25, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 26, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 27, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 28, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 29, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 30, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 31, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 32, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 33, y: 1, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 34, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 0, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 29, y: 3, fg: Rgb(114, 115, 116), bg: Reset, underline: Reset, modifier: NONE,
++        x: 46, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++    ]
++}
+--- /dev/null
++++ b/codex-rs/tui/src/bottom_pane/chat_composer/snapshots/codex_tui__bottom_pane__chat_composer__appearance_tests__refined_input_light_empty.snap
+@@ -0,0 +1,27 @@
++---
++source: tui/src/bottom_pane/chat_composer/appearance_tests.rs
++assertion_line: 42
++expression: "format!(\"{buffer:?}\")"
++---
++Buffer {
++    area: Rect { x: 0, y: 0, width: 48, height: 4 },
++    content: [
++        "                                                ",
++        "› Ask Codex to do anything                      ",
++        "                                                ",
++        "  ? for shortcuts            100% context left  ",
++    ],
++    styles: [
++        x: 0, y: 0, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 0, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: BOLD,
++        x: 1, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 2, y: 1, fg: Rgb(109, 110, 111), bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 26, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 0, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 2, y: 3, fg: Rgb(84, 85, 87), bg: Reset, underline: Reset, modifier: BOLD,
++        x: 3, y: 3, fg: Rgb(114, 115, 116), bg: Reset, underline: Reset, modifier: NONE,
++        x: 17, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 29, y: 3, fg: Rgb(114, 115, 116), bg: Reset, underline: Reset, modifier: NONE,
++        x: 46, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++    ]
++}
+--- /dev/null
++++ b/codex-rs/tui/src/bottom_pane/chat_composer/snapshots/codex_tui__bottom_pane__chat_composer__appearance_tests__refined_input_light_wrapped.snap
+@@ -0,0 +1,24 @@
++---
++source: tui/src/bottom_pane/chat_composer/appearance_tests.rs
++assertion_line: 42
++expression: "format!(\"{buffer:?}\")"
++---
++Buffer {
++    area: Rect { x: 0, y: 0, width: 16, height: 7 },
++    content: [
++        "                ",
++        "› Keep the      ",
++        "  input calm    ",
++        "  and           ",
++        "  readable.     ",
++        "                ",
++        "  100% context l",
++    ],
++    styles: [
++        x: 0, y: 0, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 0, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: BOLD,
++        x: 1, y: 1, fg: Reset, bg: Rgb(242, 242, 242), underline: Reset, modifier: NONE,
++        x: 0, y: 6, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
++        x: 2, y: 6, fg: Rgb(114, 115, 116), bg: Reset, underline: Reset, modifier: NONE,
++    ]
++}
+--- a/codex-rs/tui/src/bottom_pane/chat_composer/snapshots/codex_tui__bottom_pane__chat_composer__warning_notice__tests__warning_notice_styles.snap
++++ b/codex-rs/tui/src/bottom_pane/chat_composer/snapshots/codex_tui__bottom_pane__chat_composer__warning_notice__tests__warning_notice_styles.snap
+@@ -1,6 +1,6 @@
+ ---
+ source: tui/src/bottom_pane/chat_composer/warning_notice_tests.rs
+-assertion_line: 105
++assertion_line: 67
+ expression: styled
+ ---
+ Buffer {
+@@ -13,9 +13,9 @@
+         "                                                      ⚠ 3 warnings · f2 to view ",
+     ],
+     styles: [
+-        x: 0, y: 0, fg: Reset, bg: Rgb(44, 44, 44), underline: Reset, modifier: NONE,
+-        x: 0, y: 1, fg: Reset, bg: Rgb(44, 44, 44), underline: Reset, modifier: BOLD,
+-        x: 1, y: 1, fg: Reset, bg: Rgb(44, 44, 44), underline: Reset, modifier: NONE,
++        x: 0, y: 0, fg: Reset, bg: Rgb(37, 37, 37), underline: Reset, modifier: NONE,
++        x: 0, y: 1, fg: Reset, bg: Rgb(37, 37, 37), underline: Reset, modifier: BOLD,
++        x: 1, y: 1, fg: Reset, bg: Rgb(37, 37, 37), underline: Reset, modifier: NONE,
+         x: 0, y: 3, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+         x: 54, y: 4, fg: Rgb(139, 139, 139), bg: Reset, underline: Reset, modifier: NONE,
+         x: 56, y: 4, fg: Rgb(196, 167, 103), bg: Reset, underline: Reset, modifier: NONE,
+--- a/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__chat_composer__tests__footer_collapse_empty_mode_only.snap
++++ b/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__chat_composer__tests__footer_collapse_empty_mode_only.snap
+@@ -1,9 +1,10 @@
+ ---
+ source: tui/src/bottom_pane/chat_composer.rs
++assertion_line: 5320
+ expression: terminal.backend()
+ ---
+ "                          "
+-"› Ask Codex to do anythin "
++"› Ask Codex to do anythi  "
+ "                          "
+ "                          "
+ "                          "
+--- a/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__chat_composer__tests__footer_collapse_plan_empty_mode_only.snap
++++ b/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__chat_composer__tests__footer_collapse_plan_empty_mode_only.snap
+@@ -1,9 +1,10 @@
+ ---
+ source: tui/src/bottom_pane/chat_composer.rs
++assertion_line: 5320
+ expression: terminal.backend()
+ ---
+ "                          "
+-"› Ask Codex to do anythin "
++"› Ask Codex to do anythi  "
+ "                          "
+ "                          "
+ "                          "
+--- a/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__chat_composer__tests__light_terminal_palette_composer.snap
++++ b/codex-rs/tui/src/bottom_pane/snapshots/codex_tui__bottom_pane__chat_composer__tests__light_terminal_palette_composer.snap
+@@ -1,5 +1,6 @@
+ ---
+ source: tui/src/bottom_pane/chat_composer.rs
++assertion_line: 5156
+ expression: "format!(\"{buffer:?}\")"
+ ---
+ Buffer {
+@@ -13,11 +14,11 @@
+         "  ? for shortcuts            100% context left  ",
+     ],
+     styles: [
+-        x: 0, y: 0, fg: Reset, bg: Rgb(244, 244, 244), underline: Reset, modifier: NONE,
+-        x: 0, y: 1, fg: Reset, bg: Rgb(244, 244, 244), underline: Reset, modifier: BOLD,
+-        x: 1, y: 1, fg: Reset, bg: Rgb(244, 244, 244), underline: Reset, modifier: NONE,
+-        x: 2, y: 1, fg: Reset, bg: Rgb(244, 244, 244), underline: Reset, modifier: DIM,
+-        x: 26, y: 1, fg: Reset, bg: Rgb(244, 244, 244), underline: Reset, modifier: NONE,
++        x: 0, y: 0, fg: Reset, bg: Rgb(247, 247, 247), underline: Reset, modifier: NONE,
++        x: 0, y: 1, fg: Reset, bg: Rgb(247, 247, 247), underline: Reset, modifier: BOLD,
++        x: 1, y: 1, fg: Reset, bg: Rgb(247, 247, 247), underline: Reset, modifier: NONE,
++        x: 2, y: 1, fg: Rgb(113, 114, 112), bg: Rgb(247, 247, 247), underline: Reset, modifier: NONE,
++        x: 26, y: 1, fg: Reset, bg: Rgb(247, 247, 247), underline: Reset, modifier: NONE,
+         x: 0, y: 5, fg: Reset, bg: Reset, underline: Reset, modifier: NONE,
+         x: 2, y: 5, fg: Rgb(110, 112, 108), bg: Reset, underline: Reset, modifier: BOLD,
+         x: 3, y: 5, fg: Rgb(118, 119, 117), bg: Reset, underline: Reset, modifier: NONE,

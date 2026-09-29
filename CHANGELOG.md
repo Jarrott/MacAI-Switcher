@@ -4,6 +4,11 @@
 
 ### Changed
 
+- Give the optional Codex client a rounded four-sided input border, terminal-matched
+  background and balanced padding. Preserve editing behavior and keep AI hints
+  clear of the border corners.
+- Add opt-out AI draft suggestions through the connected Codex backend, with
+  debouncing, cancellation, Tab acceptance and no automatic submission.
 - Persist accumulated application runtime in local SQLite instead of resetting the
   menu timer on every launch. Save once per minute and during normal termination;
   application downtime is excluded, and preview rendering leaves saved runtime alone.
@@ -54,6 +59,18 @@
   brown/gray fill.
 
 ### Fixed
+
+- Add a version-scoped Codex 0.159.0 client repair for `/status` losing its email
+  after a plan-only account notification. Re-read identity from the same backend
+  without refreshing tokens; never carry an old email across account changes.
+- Route interactive launches to the optional repaired client only when upstream
+  is exactly 0.159.0. Preserve utility commands and automatically bypass the
+  repair after an upstream version change.
+- Add optional zsh integration for Codex local interactive launches, resume and
+  fork. Use `--no-daemon` to avoid reusing a shared server's cached old account;
+  preserve utility commands, explicit remote connections and CLI exit statuses.
+- Document existing-session limits, lock handling, missing empty-session history,
+  account-identity verification and shell-integration installation/rollback.
 
 - Prevent repeated Claude Keychain password prompts caused by native credential
   writes rebinding the partition ACL to AI Switcher's ad-hoc code hash. Use the

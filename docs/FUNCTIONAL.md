@@ -67,6 +67,18 @@ configured. Placeholder actions must not be presented as working features.
 - Claude identifiers use a deterministic SHA-256-derived credential fingerprint. Legacy snapshots
   created with Swift `hashValue` are reconciled by credential equality.
 
+For Codex shared-server login caching, local terminal integration, identity
+verification and safe session recovery, see [CODEX_TERMINALS.md](CODEX_TERMINALS.md).
+The active checkmark represents the selected live credential, not proof that an
+already-running CLI or background server has reloaded it.
+The optional [Codex 0.159.0 email-display repair](CODEX_STATUS_EMAIL.md) restores
+the native `/status` email using the session backend's identity. It does not
+change the selected credential or synchronize running sessions. Utilities and
+newer upstream CLI versions continue to use the official executable.
+The optional [input extension](CODEX_INPUT.md) adds a rounded four-sided input frame,
+terminal-matched background, balanced padding and AI ghost-text suggestions. Completion uses the current backend in an
+isolated temporary thread; Tab accepts text and Enter never implicitly accepts it.
+
 ## Add account
 
 - Add Account opens a dedicated utility window and lets the user select Codex or

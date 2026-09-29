@@ -4,7 +4,30 @@ These endpoints are provider-owned, undocumented backend interfaces and may
 change. Callers must handle non-2xx responses, decoding changes, and missing
 fields without fabricating values.
 
+## Local Codex status display
+
+The optional [Codex 0.159.0 display repair](CODEX_STATUS_EMAIL.md) uses the existing
+app-server JSON-RPC method `account/read` on the current session's connection.
+`refreshToken` is false (the protocol may omit this default). The response's
+`account` is nullable; a ChatGPT account exposes `type: "chatgpt"`, nullable
+`email`, and `planType`. API-key and Amazon Bedrock accounts have no ChatGPT email.
+
+An `account/updated` notification triggers a bounded three-second read. A missing
+email remains unknown; errors/timeouts use the notification's plan-only fallback.
+No previous email or AI Switcher selection is used as a substitute. The repair
+does not change the upstream API, initiate login, or explicitly refresh tokens.
+
 ## Codex / ChatGPT
+
+### Local input suggestions
+
+The optional [input extension](CODEX_INPUT.md) reuses `config/read`, `thread/start`,
+`turn/start`, `turn/interrupt` and `thread/unsubscribe` through the connected
+app-server. It adds no backend endpoints or response fields. The temporary thread
+has `ephemeral: true` and a `prompt_suggestion` feature source; model output follows
+the JSON schema `{ "suffix": string }`. Client validation limits the suffix to
+120 characters and rejects terminal controls or multiline output. The shared helper
+bounds startup/turn execution to 30 seconds and detaches completed/cancelled threads.
 
 ### Usage windows
 
