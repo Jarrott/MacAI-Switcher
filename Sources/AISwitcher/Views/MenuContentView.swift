@@ -71,7 +71,7 @@ struct MenuContentView: View {
                                     isResetting: accounts.isResetting(account),
                                     errorMessage: accounts.refreshError(for: account),
                                     locale: loc.locale,
-                                    onSelect: { accounts.activate(account) },
+                                    onSelect: { Task { await accounts.activate(account) } },
                                     onConsumeReset: { creditID in
                                         try await accounts.consumeResetCredit(
                                             for: account,
@@ -144,7 +144,7 @@ struct MenuContentView: View {
                     isLoading: accounts.isRefreshing,
                     isEnabled: !accounts.isRefreshing
                 ) {
-                    Task { await accounts.refreshAll() }
+                    Task { await accounts.refreshAll(retryingRejectedLogins: true) }
                 }
                 MenuActionRow(
                     title: loc.string("menu.quit"),
@@ -156,7 +156,7 @@ struct MenuContentView: View {
             .padding(.vertical, 3)
         }
         .padding(.bottom, 4)
-        .frame(width: 320)
+        .frame(width: MenuBarPanelController.panelWidth)
         .menuGlassPanel(
             solidBackground: solidBackground,
             cornerRadius: 14,
@@ -167,6 +167,11 @@ struct MenuContentView: View {
         }
         .onReceive(
             NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)
+        ) { _ in
+            dismissAccountSwitcher()
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: MenuBarPanelController.didCloseNotification)
         ) { _ in
             dismissAccountSwitcher()
         }
@@ -245,7 +250,9 @@ struct MenuContentView: View {
     /// - Side effects: Atomically replaces that provider's live credential when
     ///   needed, then dismisses the account switcher.
     private func selectAccountFromSwitcher(_ account: Account) {
-        if !accounts.isActive(account) { accounts.activate(account) }
+        if !accounts.isActive(account) {
+            Task { await accounts.activate(account) }
+        }
         dismissAccountSwitcher()
     }
 

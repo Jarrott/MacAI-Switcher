@@ -14,9 +14,11 @@ final class AISwitcherAppDelegate: NSObject, NSApplicationDelegate {
     /// Discover live provider credentials, refresh usage, and start periodic refresh.
     ///
     /// - Parameter notification: AppKit launch-completion notification.
-    /// - Side effects: Reconciles persisted account state, performs provider requests,
-    ///   and installs the five-minute refresh task. Repeated callbacks replace prior work.
+    /// - Side effects: Inserts the AppKit-owned status item, reconciles persisted
+    ///   account state, performs provider requests, and installs the five-minute
+    ///   refresh task. Repeated callbacks replace prior work.
     func applicationDidFinishLaunching(_ notification: Notification) {
+        MenuBarPanelController.shared.install { AnyView(MenuDropdownRoot()) }
         startupTask?.cancel()
         startupTask = Task { @MainActor in
             await AccountsManager.shared.discoverLiveAccounts()
@@ -68,27 +70,35 @@ enum Main {
     }
 }
 
+/// Root of the status item dropdown, observing shared app state like a scene would.
+private struct MenuDropdownRoot: View {
+    @State private var accounts = AccountsManager.shared
+    @State private var loc = LocalizationManager.shared
+
+    var body: some View {
+        MenuContentView(
+            accounts: accounts,
+            loc: loc,
+            onQuit: { NSApp.terminate(nil) }
+        )
+        .environment(\.locale, loc.locale)
+        .id(loc.language)  // rebuild when the language changes
+    }
+}
+
 struct AISwitcherApp: App {
     @NSApplicationDelegateAdaptor(AISwitcherAppDelegate.self) private var appDelegate
     @State private var accounts = AccountsManager.shared
     @State private var loc = LocalizationManager.shared
 
     var body: some Scene {
-        // Menu bar icon + dropdown window.
-        MenuBarExtra {
-            MenuContentView(
-                accounts: accounts,
-                loc: loc,
-                onQuit: { NSApp.terminate(nil) }
-            )
-            .environment(\.locale, loc.locale)
-            .id(loc.language)  // rebuild when the language changes
-        } label: {
-            // Vector switch glyph, rendered as a template so it stays sharp and
-            // tints correctly in light and dark menu-bar appearances.
-            Image(nsImage: Self.menuBarImage)
+        // The real status item and dropdown are AppKit-owned (`MenuBarPanelController`);
+        // see that file for why SwiftUI `MenuBarExtra` is not used for them. This
+        // never-inserted placeholder only keeps SwiftUI from auto-opening the first
+        // `Window` scene at launch.
+        MenuBarExtra("AI Switcher", isInserted: .constant(false)) {
+            EmptyView()
         }
-        .menuBarExtraStyle(.window)
 
         Window("Add Account", id: AppWindowID.addAccount) {
             AddAccountView(accounts: accounts, loc: loc)
@@ -110,46 +120,4 @@ struct AISwitcherApp: App {
                 .id(loc.language)
         }
     }
-
-    /// Load the vector menu-bar glyph at its logical point size.
-    ///
-    /// The SVG is preferred so AppKit rasterizes it at the display's native scale
-    /// instead of enlarging an 18-pixel bitmap on Retina screens. The PNG and SF
-    /// Symbol paths remain compatibility fallbacks. All variants are template
-    /// images, so the system controls their light/dark tint and disabled state.
-    private static let menuBarImage: NSImage = {
-        if let image = loadMenuBarImage(from: .main) { return image }
-        if let image = loadMenuBarImage(from: .module) { return image }
-        let fallback =
-            NSImage(
-                systemSymbolName: "arrow.left.arrow.right",
-                accessibilityDescription: "AI Switcher")
-            ?? NSImage()
-        fallback.isTemplate = true
-        return fallback
-    }()
-
-    /// Load the preferred menu-bar artwork from one resource bundle.
-    ///
-    /// - Parameter bundle: Packaged app resources or SwiftPM development resources.
-    /// - Returns: An 18-point template image, or `nil` when no candidate exists.
-    private static func loadMenuBarImage(from bundle: Bundle) -> NSImage? {
-        let candidates = [
-            (name: "MenuBarTemplate", extension: "svg"),
-            (name: "MenuBarTemplate@2x", extension: "png"),
-            (name: "MenuBarTemplate", extension: "png"),
-        ]
-        for candidate in candidates {
-            if let url = bundle.url(
-                forResource: candidate.name,
-                withExtension: candidate.extension
-            ), let image = NSImage(contentsOf: url) {
-                image.size = NSSize(width: 18, height: 18)
-                image.isTemplate = true
-                return image
-            }
-        }
-        return nil
-    }
-
 }

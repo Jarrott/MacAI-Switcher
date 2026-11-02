@@ -12,7 +12,7 @@ enum ClaudeKeychainStore {
     /// Serializes this process's Keychain operations and stops retrying a failed permission state.
     private final class OperationState: @unchecked Sendable {
         let lock = NSLock()
-        var failedPermission: String?
+        var failedPermissions: Set<String> = []
     }
     private static let state = OperationState()
 
@@ -25,27 +25,68 @@ enum ClaudeKeychainStore {
 
     /// Read an existing credential only when the unlocked item's ACL already permits security.
     /// - Parameters: Exact service and optional isolated test Keychain.
-    /// - Returns: Credential bytes, or nil on missing/locked/denied/ambiguous/failed access.
-    /// - Side effects: Runs one bounded system reader; a failed permission state is not retried
+    /// - Returns: Bytes of the first candidate holding a Claude OAuth login, or nil on
+    ///   missing/locked/denied/failed access or when no candidate holds one.
+    /// - Side effects: Runs bounded system readers; a failed permission state is not retried
     ///   until its metadata changes or the app restarts. Never displays or logs the contents.
     static func read(service: String = service, keychain: SecKeychain? = nil) -> Data? {
         state.lock.lock()
         defer { state.lock.unlock() }
-        guard let item = inspectItem(service: service, keychain: keychain),
-            item.permission != state.failedPermission
-        else { return nil }
-        guard
-            var data = run(
-                arguments: [
+        return loginItem(service: service, keychain: keychain)?.data
+    }
+
+    /// Select the item holding Claude's OAuth login; newer Claude Code versions can leave
+    /// several items under one service (for example an MCP-only blob under another account).
+    /// - Returns: The first candidate, in `candidateOrder`, whose bytes contain `claudeAiOauth`.
+    /// - Side effects: Latches candidates whose read fails; caller must hold `state.lock`.
+    private static func loginItem(service: String, keychain: SecKeychain?) -> (
+        item: Item, data: Data
+    )? {
+        for item in inspectItems(service: service, keychain: keychain)
+        where !state.failedPermissions.contains(item.permission) {
+            guard
+                var data = run(arguments: [
                     "find-generic-password", "-a", item.account, "-s", service, "-w", item.path,
-                ]
-            ), !data.isEmpty
-        else {
-            state.failedPermission = item.permission
-            return nil
+                ]), !data.isEmpty
+            else {
+                state.failedPermissions.insert(item.permission)
+                continue
+            }
+            if data.last == 10 { data.removeLast() }
+            if containsClaudeLogin(data) { return (item, data) }
         }
-        if data.last == 10 { data.removeLast() }
-        return data
+        return nil
+    }
+
+    /// Whether credential bytes carry a non-empty Claude OAuth access token.
+    /// - Parameter data: Raw Keychain payload; never logged.
+    /// - Returns: False for MCP-only, malformed or empty logins.
+    static func containsClaudeLogin(_ data: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let oauth = object["claudeAiOauth"] as? [String: Any],
+            let token = oauth["accessToken"] as? String
+        else { return false }
+        return !token.isEmpty
+    }
+
+    /// Order same-service items: the current macOS user's account first (Claude Code's
+    /// default), then by newest modification date; undated items keep their original order last.
+    /// - Parameters: `rows` are item account names and modification dates; `user` is the login name.
+    /// - Returns: Indices into `rows` in preference order.
+    static func candidateOrder(_ rows: [(account: String, modified: Date?)], user: String)
+        -> [Int]
+    {
+        rows.indices.sorted { lhs, rhs in
+            let left = rows[lhs]
+            let right = rows[rhs]
+            if (left.account == user) != (right.account == user) { return left.account == user }
+            switch (left.modified, right.modified) {
+            case (.some(let l), .some(let r)) where l != r: return l > r
+            case (.some, .none): return true
+            case (.none, .some): return false
+            default: return lhs < rhs
+            }
+        }
     }
 
     /// Update an existing Claude item through the same Apple-signed writer as the CLI.
@@ -60,8 +101,7 @@ enum ClaudeKeychainStore {
         state.lock.lock()
         defer { state.lock.unlock() }
         guard !data.isEmpty, data.count <= 131_072,
-            let item = inspectItem(service: service, keychain: keychain),
-            item.permission != state.failedPermission,
+            let item = loginItem(service: service, keychain: keychain)?.item,
             let account = quoted(item.account), let serviceArgument = quoted(service),
             let path = quoted(item.path)
         else { return false }
@@ -71,14 +111,15 @@ enum ClaudeKeychainStore {
         // The interactive security driver can exit successfully after an individual
         // command error. Read back the exact bytes before reporting persistence success.
         guard run(arguments: ["-i"], input: Data(command.utf8)) != nil,
-            let updated = inspectItem(service: service, keychain: keychain),
-            updated.account == item.account, updated.path == item.path,
+            inspectItems(service: service, keychain: keychain).contains(where: {
+                $0.account == item.account && $0.path == item.path
+            }),
             run(arguments: [
                 "find-generic-password", "-a", item.account, "-s", service,
                 "-w", item.path,
             ]) == data + Data([10])
         else {
-            state.failedPermission = item.permission
+            state.failedPermissions.insert(item.permission)
             return false
         }
         return true
@@ -86,7 +127,8 @@ enum ClaudeKeychainStore {
 
     /// Emit permission metadata in a short-lived copy of the app, never credential bytes.
     /// - Parameters: Exact service and optional Keychain path for the synthetic integration check.
-    /// - Returns: Encoded metadata, or nil when access is not already permitted.
+    /// - Returns: Encoded metadata of every permitted item in `candidateOrder`, or nil when
+    ///   none is already accessible.
     /// - Side effects: Read-only, noninteractive Security.framework queries. A fresh process
     ///   avoids stale SecKeychainItem references after an external writer replaces a record.
     static func metadataOutput(service: String = service, keychainPath: String? = nil) -> Data? {
@@ -94,31 +136,32 @@ enum ClaudeKeychainStore {
         if let keychainPath, SecKeychainOpen(keychainPath, &keychain) != errSecSuccess {
             return nil
         }
-        guard let item = accessibleItem(service: service, keychain: keychain) else { return nil }
-        return try? JSONEncoder().encode(item)
+        let items = accessibleItems(service: service, keychain: keychain)
+        guard !items.isEmpty else { return nil }
+        return try? JSONEncoder().encode(items)
     }
 
     /// Inspect ACLs in a fresh process because the legacy framework caches stale record handles
     /// after security updates. The helper entry point exits before app startup or account loading.
-    private static func inspectItem(service: String, keychain: SecKeychain?) -> Item? {
-        guard let executable = Bundle.main.executableURL else { return nil }
+    private static func inspectItems(service: String, keychain: SecKeychain?) -> [Item] {
+        guard let executable = Bundle.main.executableURL else { return [] }
         var arguments = ["--claude-keychain-metadata", service]
         if let keychain {
             var length: UInt32 = 4096
             var bytes = [CChar](repeating: 0, count: Int(length))
-            guard SecKeychainGetPath(keychain, &length, &bytes) == errSecSuccess else { return nil }
+            guard SecKeychainGetPath(keychain, &length, &bytes) == errSecSuccess else { return [] }
             arguments.append(String(cString: bytes))
         }
         guard let data = run(arguments: arguments, executable: executable),
-            let item = try? JSONDecoder().decode(Item.self, from: data)
-        else { return nil }
-        return item
+            let items = try? JSONDecoder().decode([Item].self, from: data)
+        else { return [] }
+        return items
     }
 
-    /// Inspect only the unique item's metadata, lock state and both layers of read permission.
-    /// Returns nil without spawning security when authentication would be needed. A concurrent
+    /// Inspect every same-service item's metadata, lock state and both layers of read permission.
+    /// Items needing authentication are skipped without spawning security. A concurrent
     /// external ACL/lock change may still fail the subsequent command; that failure is latched.
-    private static func accessibleItem(service: String, keychain: SecKeychain?) -> Item? {
+    private static func accessibleItems(service: String, keychain: SecKeychain?) -> [Item] {
         let context = LAContext()
         context.interactionNotAllowed = true
         var query: [String: Any] = [
@@ -132,9 +175,22 @@ enum ClaudeKeychainStore {
         if let keychain { query[kSecMatchSearchList as String] = [keychain] }
         var result: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-            let rows = result as? [[String: Any]], rows.count == 1,
-            let account = rows[0][kSecAttrAccount as String] as? String,
-            let reference = rows[0][kSecValueRef as String],
+            let rows = result as? [[String: Any]]
+        else { return [] }
+        let order = candidateOrder(
+            rows.map {
+                (
+                    account: $0[kSecAttrAccount as String] as? String ?? "",
+                    modified: $0[kSecAttrModificationDate as String] as? Date
+                )
+            }, user: NSUserName())
+        return order.compactMap { accessibleItem(service: service, row: rows[$0]) }
+    }
+
+    /// Validate one row's lock state and ACLs; nil when reading would need authentication.
+    private static func accessibleItem(service: String, row: [String: Any]) -> Item? {
+        guard let account = row[kSecAttrAccount as String] as? String,
+            let reference = row[kSecValueRef as String],
             CFGetTypeID(reference as CFTypeRef) == SecKeychainItemGetTypeID()
         else { return nil }
         let item = reference as! SecKeychainItem

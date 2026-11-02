@@ -50,15 +50,23 @@ in addition to **Codex/OpenAI**, with **English + 简体中文** localization.
 | | Codex (OpenAI) | Claude (Anthropic) |
 |---|---|---|
 | Credential | `~/.codex/auth.json` | macOS Keychain `Claude Code-credentials` (file fallback `~/.claude/.credentials.json`) |
+| Account identity | JWT claim `chatgpt_account_id` | `oauthAccount.accountUuid` in `~/.claude.json` (read-only) |
 | Plan tier | JWT claim `chatgpt_plan_type` | `claudeAiOauth.subscriptionType` |
 | Usage endpoint | `/backend-api/wham/usage` | `/api/oauth/usage` |
 | 5h / 7d source | `rate_limit.primary_window` / `secondary_window`, classified by `limit_window_seconds` (18000 / 604800) | `five_hour.utilization` / `seven_day.utilization` |
 | Token refresh | `auth.openai.com/oauth/token` | `platform.claude.com/v1/oauth/token` |
 
+Claude's credential contains no account identifier and rotates both of its tokens
+on every refresh, so identity is read from the account block Claude Code keeps in
+`~/.claude.json`. The app never writes that file. Without it, accounts fall back to
+a credential digest and a rotation performed by the CLI can look like a new login.
+
 Account switching means snapshotting each account's credential into
 `~/Library/Application Support/AISwitcher/{codex,claude}-accounts/` and writing the
-chosen snapshot back to the live location. Credential files are written atomically
-with owner-only (`0600`) permissions.
+chosen snapshot back to the live location. The credential that is live at that
+moment is snapshotted first, so a rotation the CLI performed in the meantime is not
+lost with the slot. Credential files are written atomically with owner-only (`0600`)
+permissions.
 
 Codex CLI 0.159.0 can attach new terminals to an already-running shared server
 whose cached login differs from that file. For account switching with local zsh
@@ -69,6 +77,21 @@ For the 0.159.0 `/status` email-display regression, see the optional
 [version-specific client repair](docs/CODEX_STATUS_EMAIL.md).
 The same private client can provide [rounded input styling and AI request
 suggestions](docs/CODEX_INPUT.md), with explicit Tab acceptance and an opt-out.
+
+Codex 401 recovery first reloads the matching live CLI credential, then performs at
+most one OAuth exchange and one request retry. Usage and reset actions share token
+renewal, and rotated credentials are saved before use. A rejected refresh token is
+not exchanged again in the running app until that token changes. This follows the
+[official credential lifecycle](https://learn.chatgpt.com/docs/auth#login-caching),
+where Codex can update its cached tokens while it runs.
+
+**You do not need to delete an account to repair its login.** Try Refresh Now first.
+If the CLI already has a valid login, choose Add Account → Codex → Import Current
+Login. If authorization has been revoked or expired, choose Sign In with Browser
+and sign in to the same account. The existing row, custom name, and last-known usage
+are retained. A rejected refresh token cannot be repaired without a valid replacement
+or user authorization. These recovery paths currently use `~/.codex/auth.json`;
+OS-keyring-only and custom `CODEX_HOME` credentials are outside this store's support.
 
 Claude token renewal saves the new credential before retrying usage and never
 reuses a refresh token that it already exchanged in the same request. Newer live
@@ -106,6 +129,7 @@ copies localized strings and menu artwork into the standard
 ```bash
 AISWITCHER_RENDER=/tmp/en.png AISWITCHER_LANG=en       .build/release/AISwitcher
 AISWITCHER_RENDER=/tmp/zh.png AISWITCHER_LANG=zh-Hans  .build/release/AISwitcher
+AISWITCHER_RENDER=/tmp/auth.png AISWITCHER_SCENARIO=codex-auth-error AISWITCHER_LANG=zh-Hans .build/release/AISwitcher
 AISWITCHER_RENDER=/tmp/real.png AISWITCHER_REAL=1      .build/release/AISwitcher   # real persisted data
 AISWITCHER_RENDER=/tmp/switcher.png AISWITCHER_SURFACE=account-switcher .build/release/AISwitcher
 ```
@@ -124,8 +148,11 @@ See [docs/DATABASE.md](docs/DATABASE.md) for schema migration and backup/rollbac
 
 - Claude Keychain reads and writes use the same `/usr/bin/security` identity as
   Claude Code. Permission metadata is checked without interaction before invoking
-  it; locked, ambiguous or incompatible items are unavailable rather than repeatedly
-  prompting. Native secret updates must not be used: they can replace the partition
+  it; locked or incompatible items are unavailable rather than repeatedly
+  prompting. When several items share the service (newer Claude Code versions can
+  leave an MCP-only item beside the login), the app uses the first one holding a
+  `claudeAiOauth` login, preferring the current macOS user's account, then the
+  most recently modified item. Native secret updates must not be used: they can replace the partition
   ACL with the ad-hoc app's code hash. Credential bytes travel through pipes, never
   command arguments or logs, and writes are verified by reading back the result.
 - Older builds may have left a Claude item bound to AI Switcher's code hash. That
@@ -150,9 +177,11 @@ Sources/AISwitcher/
   Services/
     CodexCredentialStore.swift  # ~/.codex/auth.json read/snapshot/swap + JWT
     ClaudeCredentialStore.swift # credential snapshots and synchronization
+    ClaudeProfileStore.swift    # stable Claude account identity from ~/.claude.json
     ClaudeKeychainStore.swift   # permission preflight and bounded system-tool I/O
     UsageService.swift          # /wham/usage + /api/oauth/usage
-    TokenRefresher.swift        # Codex OAuth refresh persistence
+    TokenRefresher.swift        # typed Codex OAuth exchange and safe errors
+    CodexAuthCoordinator.swift  # shared renewal and bounded 401 recovery
     ClaudeOAuthService.swift    # Claude OAuth exchange, errors and request coalescing
     SecureFileWriter.swift      # atomic owner-only credential writes
     AccountsManager.swift       # discovery, import, rename/remove, switching, refresh

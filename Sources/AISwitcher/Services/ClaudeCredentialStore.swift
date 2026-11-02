@@ -5,6 +5,8 @@ import Foundation
 struct ClaudeAuth: Codable, Sendable {
     var oauth: OAuth?
     var previousCredentialFingerprint: String?
+    /// Managed identity resolved from Claude Code; absent from live credentials.
+    var accountIdentity: ClaudeAccountIdentity?
 
     struct OAuth: Codable, Sendable {
         var accessToken: String?
@@ -23,6 +25,7 @@ struct ClaudeAuth: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case oauth = "claudeAiOauth"
         case previousCredentialFingerprint = "aiSwitcherPreviousCredentialFingerprint"
+        case accountIdentity = "aiSwitcherAccountIdentity"
     }
 
     var planType: String? { oauth?.subscriptionType }
@@ -44,6 +47,7 @@ final class ClaudeCredentialStore: Sendable {
     private let fileURL: URL
     private let readKeychain: (@Sendable () -> Data?)?
     private let saveKeychain: (@Sendable (Data) -> Bool)?
+    private let profiles: ClaudeProfileStore
 
     /// Configure storage; overrides isolate tests from the user's Keychain and credentials.
     init(
@@ -51,11 +55,13 @@ final class ClaudeCredentialStore: Sendable {
         fileURL: URL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/.credentials.json"),
         readKeychain: (@Sendable () -> Data?)? = nil,
-        saveKeychain: (@Sendable (Data) -> Bool)? = nil
+        saveKeychain: (@Sendable (Data) -> Bool)? = nil,
+        profiles: ClaudeProfileStore = .shared
     ) {
         self.fileURL = fileURL
         self.readKeychain = readKeychain
         self.saveKeychain = saveKeychain
+        self.profiles = profiles
         let support =
             snapshotsDir
             ?? FileManager.default
@@ -99,20 +105,70 @@ final class ClaudeCredentialStore: Sendable {
         if let previous = saved.previousCredentialFingerprint,
             previous == Self.fingerprint(live)
         {
-            let data = try mergingOAuth(saved, into: liveData, previous: nil)
+            let data = try mergingOAuth(saved, into: liveData, managed: .stripped)
             try writeLiveData(data, replacing: live)
             return saved
         }
-        guard Self.sharesCredential(saved, live) else { return saved }
+        guard Self.sharesCredential(saved, live) else {
+            return try adoptingRotatedLive(live, data: liveData, saved: saved, url: url)
+        }
         let liveIsNewer =
             (live.accessTokenExpiry ?? .distantPast) > (saved.accessTokenExpiry ?? .distantPast)
         if liveIsNewer {
-            do { try SecureFileWriter.write(liveData, to: url) } catch {
-                throw ClaudeAuthError.persistence
-            }
-            return live
+            return try adoptLive(live, data: liveData, identity: saved.accountIdentity, url: url)
         }
         return saved
+    }
+
+    /// Follow a token rotation Claude Code performed outside the switcher.
+    ///
+    /// Claude rotates both tokens on every refresh, so a token mismatch alone is
+    /// not evidence of a different login. Only the CLI's recorded account identity
+    /// can tell a rotation apart from a different account, and it is trusted only
+    /// while no managed snapshot already owns the live credential — right after the
+    /// switcher activates a snapshot, the CLI's record still describes the account
+    /// it replaced.
+    /// - Returns: The newer live generation when it provably belongs to this
+    ///   account, otherwise the unchanged snapshot.
+    /// - Throws: `persistence` when the adopted generation cannot be saved.
+    /// - Side effects: Saves the rotated credential into this account's snapshot,
+    ///   so its superseded refresh token is never presented to the provider again.
+    private func adoptingRotatedLive(
+        _ live: ClaudeAuth, data: Data, saved: ClaudeAuth, url: URL
+    ) throws -> ClaudeAuth {
+        guard let identity = saved.accountIdentity,
+            snapshotOwning(live) == nil,
+            profiles.liveIdentity()?.accountUUID == identity.accountUUID
+        else { return saved }
+        return try adoptLive(live, data: data, identity: identity, url: url)
+    }
+
+    /// Store a live credential generation as this account's snapshot.
+    /// Live credentials never carry managed metadata, so the resolved identity is
+    /// reattached instead of being dropped with the superseded generation.
+    private func adoptLive(
+        _ live: ClaudeAuth, data: Data, identity: ClaudeAccountIdentity?, url: URL
+    ) throws -> ClaudeAuth {
+        let merged = try mergingOAuth(
+            live, into: data, managed: ManagedFields(identity: identity))
+        do { try SecureFileWriter.write(merged, to: url) } catch {
+            throw ClaudeAuthError.persistence
+        }
+        var adopted = live
+        adopted.previousCredentialFingerprint = nil
+        adopted.accountIdentity = identity
+        return adopted
+    }
+
+    /// The managed snapshot whose OAuth tokens the live credential already matches.
+    /// A match proves the switcher, not Claude Code, produced the live credential.
+    private func snapshotOwning(_ live: ClaudeAuth) -> String? {
+        let names =
+            (try? FileManager.default.contentsOfDirectory(atPath: snapshotsDir.path)) ?? []
+        return names.sorted().first { name in
+            guard name.hasSuffix(".json"), let candidate = loadSnapshot(name) else { return false }
+            return Self.sharesCredential(candidate, live)
+        }
     }
 
     /// Identify a credential generation without storing or logging additional token material.
@@ -133,15 +189,69 @@ final class ClaudeCredentialStore: Sendable {
         return false
     }
 
-    /// Build a deterministic, non-secret credential fingerprint.
+    /// Resolve the managed identifier for one Claude credential.
     ///
-    /// - Parameter auth: Parsed Claude credential; the refresh token is preferred.
-    /// - Returns: SHA-256-derived identifier, or `nil` without OAuth token material.
-    /// The raw token is never returned, persisted in the identifier, or logged.
+    /// - Parameter auth: Parsed Claude credential.
+    /// - Returns: The account's stable identifier, or `nil` without OAuth material.
+    ///
+    /// Claude rotates both tokens on every refresh, so a token-derived identifier
+    /// changes under an unchanged account and makes the same login look like a new
+    /// one. A resolved account identity is therefore always preferred; the token
+    /// digest survives only as a last resort for credentials Claude Code has not
+    /// recorded. The raw token is never returned, stored in the identifier, or logged.
     func stableAccountID(for auth: ClaudeAuth) -> String? {
+        if let identity = auth.accountIdentity { return identity.accountID }
         guard let seed = auth.oauth?.refreshToken ?? auth.accessToken else { return nil }
         let digest = SHA256.hash(data: Data(seed.utf8))
         return "claude-" + digest.prefix(12).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// One Claude login resolved from the credential that is live on this Mac.
+    struct LiveAccount: Sendable {
+        let auth: ClaudeAuth
+        let accountID: String
+        let snapshot: String?
+    }
+
+    /// Identify and back up the Claude login that is currently live.
+    ///
+    /// - Returns: The live credential with its resolved identity, or `nil` when no
+    ///   usable login exists.
+    /// - Side effects: Writes an owner-only snapshot named after the resolved
+    ///   account, so the live generation survives a later account switch.
+    ///
+    /// Identity is resolved from the snapshot that already owns the live tokens,
+    /// because the switcher wrote it and knows whose it is. Only when no snapshot
+    /// owns them did Claude Code produce this credential, and its recorded identity
+    /// becomes authoritative. An owning snapshot also keeps its existing identifier,
+    /// so a rotation the switcher itself observed never renames the account.
+    func resolveLiveAccount() -> LiveAccount? {
+        guard let data = liveData(),
+            var live = try? JSONDecoder().decode(ClaudeAuth.self, from: data),
+            let access = live.accessToken, !access.isEmpty
+        else { return nil }
+        let owner = snapshotOwning(live)
+        if let owner {
+            live.accountIdentity = loadSnapshot(owner)?.accountIdentity
+        } else {
+            live.accountIdentity = profiles.liveIdentity()
+        }
+        guard
+            let accountID = live.accountIdentity?.accountID
+                ?? owner.map({ String($0.dropLast(".json".count)) })
+                ?? stableAccountID(for: live)
+        else { return nil }
+        let merged = try? mergingOAuth(
+            live, into: data, managed: ManagedFields(identity: live.accountIdentity))
+        let filename = merged.flatMap { snapshot(data: $0, accountID: accountID) }
+        return LiveAccount(auth: live, accountID: accountID, snapshot: filename)
+    }
+
+    /// Non-secret identifier of the credential generation a snapshot currently holds.
+    /// Callers use it to notice that a rejected credential has since been replaced.
+    func snapshotFingerprint(_ filename: String?) -> String? {
+        guard let filename, let auth = loadSnapshot(filename) else { return nil }
+        return Self.fingerprint(auth)
     }
 
     /// Read the live Keychain through permission preflight, or an isolated test override.
@@ -218,21 +328,36 @@ final class ClaudeCredentialStore: Sendable {
         guard Self.fingerprint(saved) == Self.fingerprint(base) else {
             throw ClaudeAuthError.credentialChanged
         }
-        let data = try mergingOAuth(updated, into: raw, previous: Self.fingerprint(base))
+        let data = try mergingOAuth(
+            updated, into: raw,
+            managed: ManagedFields(
+                previousFingerprint: Self.fingerprint(base), identity: saved.accountIdentity))
         do { try SecureFileWriter.write(data, to: url) } catch { throw ClaudeAuthError.persistence }
         if let liveRaw = liveData(),
             let live = try? JSONDecoder().decode(ClaudeAuth.self, from: liveRaw),
             Self.fingerprint(live) == Self.fingerprint(base)
         {
-            let liveUpdated = try mergingOAuth(updated, into: liveRaw, previous: nil)
+            let liveUpdated = try mergingOAuth(updated, into: liveRaw, managed: .stripped)
             try writeLiveData(liveUpdated, replacing: live)
         }
     }
 
+    /// Switcher-owned metadata stored beside the provider's own credential JSON.
+    /// It belongs only in owner-only snapshots and is stripped from every live write,
+    /// so Claude Code always reads back exactly the shape it wrote.
+    private struct ManagedFields {
+        var previousFingerprint: String?
+        var identity: ClaudeAccountIdentity?
+
+        /// Carries no managed metadata; used for credentials handed to Claude Code.
+        static let stripped = ManagedFields()
+    }
+
     /// Merge the owned OAuth fields into a provider blob, preserving unknown CLI metadata.
     /// Throws a sanitized error for malformed JSON; never includes provider contents in errors.
-    private func mergingOAuth(_ auth: ClaudeAuth, into raw: Data, previous: String?) throws -> Data
-    {
+    private func mergingOAuth(
+        _ auth: ClaudeAuth, into raw: Data, managed: ManagedFields
+    ) throws -> Data {
         guard var object = try? JSONSerialization.jsonObject(with: raw) as? [String: Any],
             var oauth = object["claudeAiOauth"] as? [String: Any],
             let encoded = try? JSONEncoder().encode(auth.oauth),
@@ -241,7 +366,13 @@ final class ClaudeCredentialStore: Sendable {
         oauth.removeValue(forKey: "expiresAt")
         oauth.merge(fields) { _, new in new }
         object["claudeAiOauth"] = oauth
-        object["aiSwitcherPreviousCredentialFingerprint"] = previous
+        object["aiSwitcherPreviousCredentialFingerprint"] = managed.previousFingerprint
+        object["aiSwitcherAccountIdentity"] = try managed.identity.map { identity in
+            guard let encoded = try? JSONEncoder().encode(identity),
+                let fields = try? JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+            else { throw ClaudeAuthError.persistence }
+            return fields
+        }
         guard let data = try? JSONSerialization.data(withJSONObject: object) else {
             throw ClaudeAuthError.persistence
         }
@@ -258,7 +389,7 @@ final class ClaudeCredentialStore: Sendable {
         guard let src = snapshotURL(for: filename) else { return false }
         guard let raw = try? Data(contentsOf: src),
             let auth = try? JSONDecoder().decode(ClaudeAuth.self, from: raw),
-            let data = try? mergingOAuth(auth, into: raw, previous: nil)
+            let data = try? mergingOAuth(auth, into: raw, managed: .stripped)
         else { return false }
         guard writeKeychain(data) else { return false }
         // Keep fallback readers synchronized after the authoritative store succeeds.
@@ -306,7 +437,7 @@ final class ClaudeCredentialStore: Sendable {
             guard let updated = try? JSONDecoder().decode(ClaudeAuth.self, from: data) else {
                 throw ClaudeAuthError.persistence
             }
-            let merged = try mergingOAuth(updated, into: fileRaw, previous: nil)
+            let merged = try mergingOAuth(updated, into: fileRaw, managed: .stripped)
             do { try SecureFileWriter.write(merged, to: fileURL) } catch {
                 throw ClaudeAuthError.persistence
             }

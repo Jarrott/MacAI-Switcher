@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### Fixed
+
+- Recover Codex usage from stale credential snapshots by adopting matching live CLI
+  rotations before requests and after 401. Share token exchanges between usage and
+  reset redemption; never exchange the old refresh token again after proactive renewal.
+- Persist rotated Codex credentials before use, preserve unknown provider fields,
+  detect observed credential conflicts, and repair failed live writes from the saved
+  rotation. Stop replaying a rejected refresh token until it changes in this process.
+- Replace bare Codex 401 errors with English/Chinese recovery guidance. Document and
+  test importing or signing in to the same account without deleting its row, custom
+  name or cached usage; keep reset retries on the original idempotency key.
+
+- Stop Claude accounts from multiplying and from signing themselves out. Claude's
+  credential carries no account identifier and rotates both tokens on every refresh,
+  so the switcher's token-derived identifier changed under an unchanged account:
+  each rotation produced a new snapshot and a second identical "Claude" row, while
+  the stale row kept presenting a retired refresh token every five minutes. Accounts
+  are now identified by the account UUID Claude Code records in `~/.claude.json`,
+  a rotation performed by the CLI is adopted into the owning snapshot, and a
+  credential the provider has rejected is not presented again until it changes.
+  Claude rows now show the account's email instead of a generic label.
+- Snapshot the live provider credential before a switch overwrites it, so an account
+  giving up the slot keeps the generation the CLI rotated to since discovery, and an
+  unrecognized live login is kept rather than discarded.
+
+- Restore Claude usage when the Keychain holds several `Claude Code-credentials`
+  items. The app now picks the item containing the `claudeAiOauth` login (current
+  user's account first, then newest) instead of treating duplicates as unavailable,
+  which had left stale snapshot tokens failing to refresh.
+- Size the AppKit menu panel from the content measurement reported before it opens,
+  instead of a fixed 200-point fallback that clipped the dropdown under the menu bar.
+
 ### Changed
 
 - Give the optional Codex client a rounded four-sided input border, terminal-matched

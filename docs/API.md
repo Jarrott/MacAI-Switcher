@@ -80,9 +80,39 @@ with an explicit Cancel Reset action.
 
 `POST https://auth.openai.com/oauth/token`
 
-Refresh uses the Codex OAuth client ID and persists rotated access, refresh, and
-ID tokens to the managed snapshot. The live file is updated only when it belongs
-to the same active account.
+Refresh uses the existing Codex OAuth client ID and a typed JSON request with
+`grant_type`, `refresh_token`, `client_id` and `scope`. The response requires a
+nonempty `access_token`; omitted `refresh_token`/`id_token` preserve their prior
+values and explicitly empty values fail validation. Identity changes fail closed.
+HTTP 401, `invalid_grant`, `refresh_token_reused`, `refresh_token_expired` and
+`refresh_token_invalidated` become safe login-required errors; provider response
+bodies are never shown or logged. Other HTTP, transport and persistence failures
+remain distinguishable. Client-facing service error descriptions are English;
+the application resolves UI messages through English/Chinese localization.
+
+`CodexAuthCoordinator` is shared by usage and reset redemption. It reconciles
+same-account live credentials before requests and after 401, coalesces concurrent
+exchanges, and permits one exchange plus one 401 retry per operation. A rejected
+refresh token is not replayed in this process until it changes; manual refresh does
+not bypass this protection. 403/429 do not cause token exchange. Reset retries keep
+the original JSON body and `redeem_request_id`.
+
+`CodexCredentialStore` checks the saved generation before persisting rotated access,
+refresh and ID tokens, preserving unknown provider JSON fields. Atomic writes use
+0600 permissions. The live file is backed up and updated only if it still holds the
+exchanged generation. A snapshot-only `aiSwitcherPreviousCredentialFingerprint`
+(SHA-256 of the preceding token bundle) allows a failed live write to be repaired
+on the next read or discovery instead of adopting retired tokens. If even the snapshot
+write fails, the coordinator retains the exchanged generation in memory and retries
+its persistence without another exchange. Restarting before storage recovers loses
+that in-memory generation and may require reauthorization. This marker is stripped from
+live writes and activation. The file checks detect observed conflicts but cannot
+provide a transaction with independently writing CLI processes.
+
+No provider endpoint or public response schema changes. Regression tests inject
+HTTP transport and private temporary paths for 401 recovery, token rejection,
+concurrent renewal, persistence failure, account isolation, reset idempotency and
+same-account reauthorization without deletion.
 
 ## Claude
 
@@ -92,6 +122,20 @@ to the same active account.
 
 The `five_hour` and `seven_day` objects provide `utilization` on a 0...100 scale
 and ISO-8601 `resets_at` timestamps.
+
+### Account identity
+
+Claude's credential blob exposes no account identifier, and `/v1/oauth/token`
+rotates both tokens on every refresh, so no field in it is stable across a
+refresh. Account identity is read locally from `oauthAccount` in `~/.claude.json`,
+which Claude Code maintains: `accountUuid`, `emailAddress`, `displayName` and
+`organizationUuid`. The file is read-only to this app and parsed only after its
+size or modification date changes.
+
+The record describes whichever login Claude Code last wrote, so it is trusted only
+when no managed snapshot already owns the live credential. Resolved identity is
+persisted in the owner-only snapshot as `aiSwitcherAccountIdentity` and removed
+from every live write, keeping the provider blob byte-shaped as the CLI wrote it.
 
 ### Token refresh
 
@@ -121,11 +165,19 @@ Keychain and an existing file fallback are updated only when they still match th
 generation. Keychain writes use `security -i` with hex-encoded bytes on stdin and
 verified readback; direct native secret updates are prohibited because they rebind
 the partition ACL to the app. Metadata-only preflight rejects locked or incompatible
-items without spawning the credential reader. See
+items without spawning the credential reader. With several same-service items, reads
+and writes target the first accessible one containing a non-empty `claudeAiOauth`
+access token, ordered by current-user account and then newest modification date. See
 [recovery](FUNCTIONAL.md#claude-keychain-recovery). A snapshot-only
 `aiSwitcherPreviousCredentialFingerprint` records the
 SHA-256 digest of the preceding credential generation so a failed live write can
 be repaired from the saved rotation on a later refresh. It is not an account ID.
+
+A live credential that no longer shares tokens with its snapshot is adopted into
+that snapshot when the recorded account matches, instead of exchanging the snapshot's
+superseded refresh token. Rotation-based providers treat a replayed refresh token as
+reuse and may revoke the token family it belongs to, so a credential the provider
+rejected is not presented again until it changes.
 
 OAuth `invalid_grant` and 401 return an actionable login error. Other refresh HTTP
 statuses, invalid responses, network failures, storage failures and observed

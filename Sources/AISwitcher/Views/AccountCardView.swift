@@ -221,7 +221,7 @@ struct AccountCardView: View {
                 title: appLocalized("card.reset.error.title"),
                 message: String(
                     format: appLocalized("card.reset.error.message"),
-                    error.localizedDescription
+                    (error as? CodexAuthError)?.displayMessage ?? error.localizedDescription
                 ),
                 style: .critical
             )

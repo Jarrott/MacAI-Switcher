@@ -50,7 +50,7 @@
 
 /* Add account */
 "add_account.title" = "Add Account";
-"add_account.login_instructions" = "Browser sign-in runs the installed provider CLI and automatically imports its credential when OAuth finishes. The command below remains available as a manual fallback.";
+"add_account.login_instructions" = "Browser sign-in runs the installed provider CLI and automatically imports its credential when OAuth finishes. The command below remains available as a manual fallback. Signing in to an existing account updates it in place; no removal is needed.";
 "add_account.copy_command" = "Copy";
 "add_account.open_terminal" = "Open Terminal";
 "add_account.browser_login" = "Sign In with Browser";
@@ -110,3 +110,12 @@
 "claude.auth.invalid_response" = "Claude returned an invalid token refresh response.";
 "claude.auth.persistence" = "Could not save Claude credentials. Check Keychain access and file permissions.";
 "claude.auth.changed" = "Claude credentials changed during refresh. Refresh again.";
+
+/* Codex authentication recovery */
+"codex.auth.missing" = "Codex login unavailable. Add Account → Import Current Login.";
+"codex.auth.login_required" = "Codex sign-in expired. Add Account → sign in again; no removal needed.";
+"codex.auth.network" = "Cannot reach Codex. Try refreshing later.";
+"codex.auth.refresh_http" = "Codex token refresh failed (HTTP %d). Try again later.";
+"codex.auth.invalid_response" = "Codex returned an invalid token refresh response.";
+"codex.auth.persistence" = "Could not save Codex credentials. Check file permissions.";
+"codex.auth.changed" = "Codex credentials changed during refresh. Refresh again.";

@@ -18,7 +18,10 @@ enum PreviewRenderer {
             // Render whatever is actually persisted (real accounts + usage).
             mgr.loadForPreview()
         } else {
-            mgr.installMockData()
+            mgr.installMockData(
+                codexAuthError: ProcessInfo.processInfo.environment["AISWITCHER_SCENARIO"]
+                    == "codex-auth-error"
+            )
         }
 
         let surface = ProcessInfo.processInfo.environment["AISWITCHER_SURFACE"]

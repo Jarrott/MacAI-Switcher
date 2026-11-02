@@ -46,6 +46,8 @@ final class AccountsManager {
     var isRefreshing = false
     private(set) var resettingAccountIDs: Set<UUID> = []
     private(set) var refreshErrors: [UUID: String] = [:]
+    /// Credential generations the provider has already rejected, keyed by account.
+    private var rejectedCredentials: [UUID: String] = [:]
     var lastError: String?
 
     /// Optional trial banner state (mirrors the reference app).
@@ -54,9 +56,25 @@ final class AccountsManager {
     private let persistenceURL: URL
     /// When true, never write to disk (used by the offscreen previewer).
     private let ephemeral: Bool
+    /// Claude snapshot storage. Overridable so tests never touch real credentials.
+    private let claudeStore: ClaudeCredentialStore
+    /// Codex paths are injectable so import/recovery tests never touch real credentials.
+    private let codexStore: CodexCredentialStore
+    /// Usage transport, injected so refresh behavior is testable without network.
+    private let fetchUsage: @Sendable (Account) async throws -> Usage
 
-    init(ephemeral: Bool = false) {
+    init(
+        ephemeral: Bool = false,
+        claudeStore: ClaudeCredentialStore = .shared,
+        codexStore: CodexCredentialStore = .shared,
+        fetchUsage: @escaping @Sendable (Account) async throws -> Usage = {
+            try await UsageService.fetch(for: $0)
+        }
+    ) {
         self.ephemeral = ephemeral
+        self.claudeStore = claudeStore
+        self.codexStore = codexStore
+        self.fetchUsage = fetchUsage
         let support = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("AISwitcher", isDirectory: true)
@@ -86,8 +104,8 @@ final class AccountsManager {
         resettingAccountIDs.contains(account.id)
     }
 
-    /// Load mock accounts mirroring the reference screenshot (for the previewer).
-    func installMockData() {
+    /// Load synthetic preview accounts; optionally show Codex recovery text without disk or HTTP access.
+    func installMockData(codexAuthError: Bool = false) {
         func date(_ day: Int) -> Date {
             var c = DateComponents()
             c.year = 2026
@@ -127,6 +145,7 @@ final class AccountsManager {
             fetchedAt: Date()
         )
         accounts = [a, b, c]
+        if codexAuthError { record(CodexAuthError.loginRequired, for: a.id) }
         activeAccountIDs[.codex] = a.id
         activeAccountIDs[.claude] = c.id
         trialRemaining = 2 * 86_400 + 16 * 3_600 + 52 * 60
@@ -151,17 +170,27 @@ final class AccountsManager {
     /// Keychain read, so Claude access cannot delay restoring the Codex checkmark.
     /// A missing provider credential clears only that provider's active marker.
     func discoverLiveAccounts() async {
-        let codex = await Task.detached(priority: .utility) {
-            Self.buildCodexAccount()
-        }.value
-        reconcileLiveAccount(codex, provider: .codex)
+        reconcileLiveAccount(await liveAccount(provider: .codex), provider: .codex)
         persist()
+        reconcileLiveAccount(await liveAccount(provider: .claude), provider: .claude)
+        persist()
+    }
 
-        let claude = await Task.detached(priority: .utility) {
-            Self.buildClaudeAccount()
+    /// Read one provider's live credential off the main actor.
+    ///
+    /// - Parameter provider: Provider whose live credential should be inspected.
+    /// - Returns: The live login reconciled against managed storage, or `nil` when
+    ///   that provider has no usable credential.
+    /// - Side effects: Writes an owner-only snapshot of the live credential.
+    private func liveAccount(provider: Provider) async -> Account? {
+        let store = claudeStore
+        let codexStore = self.codexStore
+        return await Task.detached(priority: .utility) {
+            switch provider {
+            case .codex: return Self.buildCodexAccount(store: codexStore)
+            case .claude: return Self.buildClaudeAccount(store: store)
+            }
         }.value
-        reconcileLiveAccount(claude, provider: .claude)
-        persist()
     }
 
     /// Reconcile one provider result without changing another provider's selection.
@@ -185,13 +214,7 @@ final class AccountsManager {
     /// - Returns: Added/updated account, or `nil` when no usable login is found.
     /// - Side effects: Creates an owner-only snapshot and marks the account active.
     func importCurrentAccount(provider: Provider) async -> ImportResult? {
-        let discovered: Account? = await Task.detached(priority: .userInitiated) {
-            switch provider {
-            case .codex: return Self.buildCodexAccount()
-            case .claude: return Self.buildClaudeAccount()
-            }
-        }.value
-        guard let discovered else { return nil }
+        guard let discovered = await liveAccount(provider: provider) else { return nil }
         let result = reconcile(discovered, markActive: true)
         persist()
         return result
@@ -232,6 +255,8 @@ final class AccountsManager {
         activate: Bool = false
     ) async throws -> ImportResult {
         try Task.checkCancellation()
+        let claudeStore = self.claudeStore
+        let codexStore = self.codexStore
         let discovered: Account = try await Task.detached(priority: .userInitiated) {
             switch provider {
             case .codex:
@@ -244,7 +269,7 @@ final class AccountsManager {
                     throw ImportError.missingAccountIdentity
                 }
                 guard
-                    let snapshot = CodexCredentialStore.shared.snapshot(
+                    let snapshot = codexStore.snapshot(
                         data: data,
                         accountID: accountID
                     )
@@ -256,11 +281,11 @@ final class AccountsManager {
                 guard let auth = try? JSONDecoder().decode(ClaudeAuth.self, from: data),
                     auth.accessToken != nil
                 else { throw ImportError.invalidCredential }
-                guard let accountID = ClaudeCredentialStore.shared.stableAccountID(for: auth) else {
+                guard let accountID = claudeStore.stableAccountID(for: auth) else {
                     throw ImportError.missingAccountIdentity
                 }
                 guard
-                    let snapshot = ClaudeCredentialStore.shared.snapshot(
+                    let snapshot = claudeStore.snapshot(
                         data: data,
                         accountID: accountID
                     )
@@ -294,8 +319,8 @@ final class AccountsManager {
         }
         let activated: Bool
         switch account.provider {
-        case .codex: activated = CodexCredentialStore.shared.activate(snapshot: snapshot)
-        case .claude: activated = ClaudeCredentialStore.shared.activate(snapshot: snapshot)
+        case .codex: activated = codexStore.activate(snapshot: snapshot)
+        case .claude: activated = claudeStore.activate(snapshot: snapshot)
         }
         guard activated else {
             lastError = "Failed to switch account"
@@ -339,8 +364,8 @@ final class AccountsManager {
 
         let restored: Bool
         switch account.provider {
-        case .codex: restored = CodexCredentialStore.shared.activate(snapshot: snapshot)
-        case .claude: restored = ClaudeCredentialStore.shared.activate(snapshot: snapshot)
+        case .codex: restored = codexStore.activate(snapshot: snapshot)
+        case .claude: restored = claudeStore.activate(snapshot: snapshot)
         }
         guard restored else {
             lastError = "The previous account credential could not be restored."
@@ -353,13 +378,13 @@ final class AccountsManager {
         return true
     }
 
-    // Credential-reading helpers run off the main actor via discoverLiveAccounts().
-    nonisolated static func buildCodexAccount() -> Account? {
-        guard let auth = CodexCredentialStore.shared.currentAuth(),
+    /// Read and snapshot the live Codex login off the main actor; injected paths isolate tests.
+    nonisolated static func buildCodexAccount(store: CodexCredentialStore = .shared) -> Account? {
+        guard let auth = store.currentAuth(),
             auth.tokens?.accessToken != nil,
             let accountID = auth.accountID
         else { return nil }
-        let snap = CodexCredentialStore.shared.snapshotCurrent(accountID: accountID)
+        let snap = store.snapshotCurrent(accountID: accountID)
         return makeCodexAccount(auth: auth, snapshot: snap)
     }
 
@@ -387,16 +412,17 @@ final class AccountsManager {
             ?? "Codex"
     }
 
-    nonisolated static func buildClaudeAccount() -> Account? {
-        guard let auth = ClaudeCredentialStore.shared.currentAuth(),
-            auth.accessToken != nil,
-            let accountID = ClaudeCredentialStore.shared.stableAccountID(for: auth)
-        else { return nil }
-        let snap = ClaudeCredentialStore.shared.snapshotCurrent(accountID: accountID)
-        return makeClaudeAccount(auth: auth, accountID: accountID, snapshot: snap)
+    nonisolated static func buildClaudeAccount(
+        store: ClaudeCredentialStore = .shared
+    ) -> Account? {
+        guard let live = store.resolveLiveAccount() else { return nil }
+        return makeClaudeAccount(
+            auth: live.auth, accountID: live.accountID, snapshot: live.snapshot)
     }
 
     /// Convert validated Claude credential metadata into the persisted account model.
+    /// Claude's credential carries no identity of its own, so the label stays generic
+    /// until Claude Code's recorded account resolves one.
     nonisolated static func makeClaudeAccount(
         auth: ClaudeAuth,
         accountID: String,
@@ -404,8 +430,8 @@ final class AccountsManager {
     ) -> Account {
         Account(
             provider: .claude,
-            label: "Claude",
-            email: nil,
+            label: auth.accountIdentity?.label ?? Provider.claude.displayName,
+            email: auth.accountIdentity?.email,
             plan: PlanTier.parse(auth.planType),
             accountID: accountID,
             credentialSnapshot: snapshot
@@ -419,14 +445,19 @@ final class AccountsManager {
                 return true
             }
             guard discovered.provider == .claude else { return false }
-            return ClaudeCredentialStore.shared.snapshotsContainSameAccount(
+            return claudeStore.snapshotsContainSameAccount(
                 $0.credentialSnapshot,
                 discovered.credentialSnapshot
             )
         }
 
         if let existingIndex {
-            accounts[existingIndex].label = discovered.label
+            // Discovery falls back to a generic label when a provider stops reporting
+            // identity; that must not erase a label an earlier resolution produced.
+            let generic = discovered.provider.displayName
+            if discovered.label != generic || accounts[existingIndex].label == generic {
+                accounts[existingIndex].label = discovered.label
+            }
             accounts[existingIndex].email = discovered.email ?? accounts[existingIndex].email
             if discovered.plan != .unknown {
                 accounts[existingIndex].plan = discovered.plan
@@ -450,13 +481,31 @@ final class AccountsManager {
     /// Activate one managed account for its provider.
     ///
     /// - Parameter account: Account whose credential snapshot should become live.
-    /// - Side effects: Backs up/replaces the provider credential and persists active state.
+    /// - Side effects: Backs up the live credential, replaces it, and persists active state.
     /// - Failure: Leaves active state unchanged and stores a user-visible `lastError`.
-    func activate(_ account: Account) {
+    func activate(_ account: Account) async {
         guard !isActive(account) else { return }
-        if commitLiveCredential(for: account) {
+        await captureLiveCredential(provider: account.provider)
+        guard let target = accounts.first(where: { $0.id == account.id }) else { return }
+        if commitLiveCredential(for: target) {
             persist()
         }
+    }
+
+    /// Snapshot the provider credential that is live right now, before it is replaced.
+    ///
+    /// - Parameter provider: Provider whose live credential is about to change.
+    /// - Side effects: Reconciles the live login without changing which account is
+    ///   active, writing its current generation to a managed snapshot.
+    ///
+    /// Provider CLIs rotate their tokens outside the switcher, so the generation
+    /// captured at launch is routinely stale by the time the user switches. Writing
+    /// over it without this capture would leave the account losing the slot holding
+    /// a superseded credential it can never present again. A live login the switcher
+    /// does not recognize is kept as its own account rather than silently discarded.
+    private func captureLiveCredential(provider: Provider) async {
+        guard let live = await liveAccount(provider: provider) else { return }
+        _ = reconcile(live, markActive: false)
     }
 
     /// Rename an account without letting provider discovery overwrite the override.
@@ -482,8 +531,8 @@ final class AccountsManager {
         if let snapshot = account.credentialSnapshot {
             let removed: Bool
             switch account.provider {
-            case .codex: removed = CodexCredentialStore.shared.removeSnapshot(snapshot)
-            case .claude: removed = ClaudeCredentialStore.shared.removeSnapshot(snapshot)
+            case .codex: removed = codexStore.removeSnapshot(snapshot)
+            case .claude: removed = claudeStore.removeSnapshot(snapshot)
             }
             guard removed else {
                 lastError = "The account snapshot could not be removed."
@@ -515,42 +564,81 @@ final class AccountsManager {
 
     /// Refresh all account usage concurrently while retaining last-known-good data.
     ///
-    /// This method takes no parameters and returns after all account requests finish.
-    /// Per-account failures are recorded in `refreshErrors`; successful snapshots are
-    /// persisted atomically. Overlapping refresh attempts are coalesced. Claude renewal failures
-    /// are localized on the main actor without including provider response bodies or credentials.
-    func refreshAll() async {
+    /// - Parameter retryingRejectedLogins: Clears the latch that holds back accounts
+    ///   whose stored credential the provider already rejected. User-initiated
+    ///   refreshes pass `true`; the five-minute timer does not.
+    /// - Side effects: Per-account failures are recorded in `refreshErrors`; successful
+    ///   snapshots are persisted atomically. Overlapping refresh attempts are coalesced.
+    ///   Provider renewal failures are localized on the main actor without including
+    ///   provider response bodies or credentials.
+    func refreshAll(retryingRejectedLogins: Bool = false) async {
         guard !isRefreshing else { return }
         isRefreshing = true
         defer { isRefreshing = false }
+        if retryingRejectedLogins { rejectedCredentials.removeAll() }
 
-        await withTaskGroup(of: (UUID, Usage?, String?).self) { group in
-            for account in accounts {
+        await withTaskGroup(of: (UUID, Usage?, Error?).self) { group in
+            let fetch = fetchUsage
+            for account in accounts where !isRefreshBlocked(account) {
                 group.addTask {
                     do {
-                        return (account.id, try await UsageService.fetch(for: account), nil)
+                        return (account.id, try await fetch(account), nil)
                     } catch {
-                        let message: String
-                        if let authError = error as? ClaudeAuthError {
-                            message = await authError.displayMessage
-                        } else {
-                            message = error.localizedDescription
-                        }
-                        return (account.id, nil, message)
+                        return (account.id, nil, error)
                     }
                 }
             }
-            for await (id, usage, errorMessage) in group {
+            for await (id, usage, error) in group {
                 if let usage, let index = accounts.firstIndex(where: { $0.id == id }) {
                     accounts[index].usage = usage
                     refreshErrors.removeValue(forKey: id)
-                } else if let errorMessage {
-                    refreshErrors[id] = errorMessage
+                    rejectedCredentials.removeValue(forKey: id)
+                } else if let error {
+                    record(error, for: id)
                 }
             }
         }
         lastError = refreshErrors.isEmpty ? nil : "Some usage data could not be refreshed"
         persist()
+    }
+
+    /// Store one localized failure and latch a credential the provider rejected.
+    private func record(_ error: Error, for id: UUID) {
+        if let authError = error as? CodexAuthError {
+            refreshErrors[id] = authError.displayMessage
+        } else if let authError = error as? ClaudeAuthError {
+            refreshErrors[id] = authError.displayMessage
+            if case .loginRequired = authError,
+                let account = accounts.first(where: { $0.id == id })
+            {
+                rejectedCredentials[id] = credentialGeneration(of: account)
+            }
+        } else {
+            refreshErrors[id] = error.localizedDescription
+        }
+    }
+
+    /// Whether this account's stored credential was already rejected by the provider.
+    ///
+    /// Claude rotates refresh tokens and a rejected one stays rejected until the
+    /// credential changes. Presenting it again every five minutes replays a consumed
+    /// token, which providers treat as token reuse and may answer by revoking the
+    /// whole token family — including the login Claude Code is still using. The latch
+    /// releases itself as soon as the snapshot holds a different generation.
+    private func isRefreshBlocked(_ account: Account) -> Bool {
+        guard let rejected = rejectedCredentials[account.id] else { return false }
+        guard credentialGeneration(of: account) == rejected else {
+            rejectedCredentials.removeValue(forKey: account.id)
+            return false
+        }
+        return true
+    }
+
+    /// Identify the credential generation an account currently holds.
+    /// Unreadable storage collapses to one sentinel rather than a missing value,
+    /// so a rejection can never be latched under a key that silently disappears.
+    private func credentialGeneration(of account: Account) -> String {
+        claudeStore.snapshotFingerprint(account.credentialSnapshot) ?? "unavailable"
     }
 
     /// Consume one confirmed Codex reset credit and reconcile the provider snapshot.
@@ -590,7 +678,7 @@ final class AccountsManager {
         } catch {
             // Redemption may already have succeeded. Preserve that outcome and the
             // last-known-good snapshot while surfacing only the follow-up refresh error.
-            refreshErrors[account.id] = error.localizedDescription
+            record(error, for: account.id)
         }
         lastError = refreshErrors.isEmpty ? nil : "Some usage data could not be refreshed"
         persist()
@@ -651,7 +739,7 @@ final class AccountsManager {
     private func repairStoredCodexMetadata() {
         for index in accounts.indices where accounts[index].provider == .codex {
             guard let snapshot = accounts[index].credentialSnapshot,
-                let auth = CodexCredentialStore.shared.loadSnapshot(snapshot)
+                let auth = codexStore.loadSnapshot(snapshot)
             else { continue }
             accounts[index].label = Self.preferredCodexLabel(email: auth.email, name: auth.name)
             accounts[index].email = auth.email ?? accounts[index].email

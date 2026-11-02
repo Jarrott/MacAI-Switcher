@@ -1,92 +1,148 @@
 import Foundation
 
-/// Refreshes expired Codex OAuth access tokens and writes them back to the
-/// credential snapshot / live file so subsequent API calls succeed.
-enum TokenRefresher {
+/// Safe Codex authentication failures. Provider bodies and credentials never reach the UI.
+enum CodexAuthError: Error, LocalizedError {
+    case missingCredentials
+    case loginRequired
+    case network
+    case refreshHTTP(Int)
+    case invalidResponse
+    case persistence
+    case credentialChanged
 
-    // Codex OAuth client id (from the access_token's `client_id` claim).
-    private static let codexClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
-    private static let codexTokenURL = URL(string: "https://auth.openai.com/oauth/token")!
+    var errorDescription: String? {
+        switch self {
+        case .missingCredentials:
+            return "Codex credentials are unavailable. Import the current login."
+        case .loginRequired:
+            return "Codex login needs authorization. Sign in again without removing the account."
+        case .network: return "The Codex authentication service could not be reached."
+        case .refreshHTTP(let status): return "Codex token refresh failed (HTTP \(status))."
+        case .invalidResponse: return "Codex returned an invalid token response."
+        case .persistence: return "Codex credentials could not be saved securely."
+        case .credentialChanged: return "Codex credentials changed during refresh. Refresh again."
+        }
+    }
+
+    /// Resolve safe failure categories in the selected UI language; API diagnostics stay English.
+    @MainActor var displayMessage: String {
+        switch self {
+        case .missingCredentials: return appLocalized("codex.auth.missing")
+        case .loginRequired: return appLocalized("codex.auth.login_required")
+        case .network: return appLocalized("codex.auth.network")
+        case .refreshHTTP(let status):
+            return String(format: appLocalized("codex.auth.refresh_http"), status)
+        case .invalidResponse: return appLocalized("codex.auth.invalid_response")
+        case .persistence: return appLocalized("codex.auth.persistence")
+        case .credentialChanged: return appLocalized("codex.auth.changed")
+        }
+    }
+}
+
+/// Exchanges Codex OAuth tokens without hiding authentication or persistence failures.
+enum TokenRefresher {
+    typealias Transport = @Sendable (URLRequest) async throws -> (Data, HTTPURLResponse)
+    static let codexTokenURL = URL(string: "https://auth.openai.com/oauth/token")!
 
     private static let session: URLSession = {
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.timeoutIntervalForRequest = 20
-        return URLSession(configuration: cfg)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 20
+        return URLSession(configuration: configuration)
     }()
 
-    // MARK: Codex
+    private struct RefreshRequest: Encodable {
+        let grantType = "refresh_token"
+        let clientID = "app_EMoamEEZ73f0CkXaXp7hrann"
+        let scope = "openid profile email"
+        let refreshToken: String
 
-    /// Refresh a Codex access token. Returns the new access token, or nil on failure.
-    /// Persists the rotated tokens back into the account's snapshot + live auth.json.
-    @discardableResult
-    static func refreshCodex(auth: CodexAuth, snapshot: String?) async -> String? {
-        guard let refresh = auth.tokens?.refreshToken else { return nil }
-
-        var req = URLRequest(url: codexTokenURL)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.setValue("codex_cli_rs", forHTTPHeaderField: "originator")
-        let body: [String: Any] = [
-            "grant_type": "refresh_token",
-            "refresh_token": refresh,
-            "client_id": codexClientID,
-            "scope": "openid profile email",
-        ]
-        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-
-        guard let obj = await postForJSON(req) else { return nil }
-        guard let newAccess = obj["access_token"] as? String else { return nil }
-        let newRefresh = obj["refresh_token"] as? String ?? refresh
-        let newID = obj["id_token"] as? String ?? auth.tokens?.idToken
-
-        persistCodex(
-            base: auth, access: newAccess, refresh: newRefresh,
-            idToken: newID, snapshot: snapshot)
-        return newAccess
+        enum CodingKeys: String, CodingKey {
+            case grantType = "grant_type"
+            case clientID = "client_id"
+            case scope
+            case refreshToken = "refresh_token"
+        }
     }
 
-    private static func persistCodex(
-        base: CodexAuth, access: String,
-        refresh: String, idToken: String?, snapshot: String?
-    ) {
-        var updated = base
-        var tokens = updated.tokens ?? CodexAuth.Tokens()
-        tokens.accessToken = access
-        tokens.refreshToken = refresh
-        tokens.idToken = idToken
-        updated.tokens = tokens
-        updated.lastRefresh = ISO8601DateFormatter().string(from: Date())
+    private struct RefreshResponse: Decodable {
+        let accessToken: String
+        let refreshToken: String?
+        let idToken: String?
 
-        guard let data = try? JSONEncoder().encode(updated) else { return }
-        // Write back to the snapshot (if this account owns one)…
-        if let snapshot {
-            let url = CodexCredentialStore.shared.snapshotsDir.appendingPathComponent(snapshot)
-            try? SecureFileWriter.write(data, to: url)
+        enum CodingKeys: String, CodingKey {
+            case accessToken = "access_token"
+            case refreshToken = "refresh_token"
+            case idToken = "id_token"
         }
-        // …and to the live file if this account is the active one.
-        if let live = CodexCredentialStore.shared.currentAuth(),
-            live.accountID == updated.accountID
-        {
-            let authURL = CodexCredentialStore.shared.authURL
-            // Back up the working file before overwriting, so a bad write is recoverable.
-            if let cur = try? Data(contentsOf: authURL) {
-                try? SecureFileWriter.write(
-                    cur,
-                    to: authURL.appendingPathExtension("switcher-bak")
-                )
+    }
+
+    /// Send a request with bounded timeout and sanitized transport errors; never logs credentials.
+    static func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let response = response as? HTTPURLResponse else {
+                throw CodexAuthError.invalidResponse
             }
-            try? SecureFileWriter.write(data, to: authURL)
+            return (data, response)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as CodexAuthError {
+            throw error
+        } catch {
+            throw CodexAuthError.network
         }
     }
 
-    // MARK: HTTP
-
-    private static func postForJSON(_ req: URLRequest) async -> [String: Any]? {
-        guard let (data, resp) = try? await session.data(for: req),
-            let http = resp as? HTTPURLResponse,
-            (200..<300).contains(http.statusCode),
-            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        return obj
+    /// Exchange one latest refresh token, returning the complete credential for durable storage.
+    /// - Parameters: `auth` is the verified generation; `transport` permits isolated HTTP tests.
+    /// - Throws: Sanitized login, HTTP, network or malformed-response errors.
+    /// - Side effects: Rotates server-side tokens; the caller must persist before using them.
+    static func refreshCodex(
+        auth: CodexAuth, transport: Transport = send
+    ) async throws -> CodexAuth {
+        guard let refresh = auth.tokens?.refreshToken, !refresh.isEmpty else {
+            throw CodexAuthError.loginRequired
+        }
+        var request = URLRequest(url: codexTokenURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("codex_cli_rs", forHTTPHeaderField: "originator")
+        request.httpBody = try JSONEncoder().encode(RefreshRequest(refreshToken: refresh))
+        let (data, response) = try await transport(request)
+        guard (200..<300).contains(response.statusCode) else {
+            // OpenAI may use either a string OAuth error or a nested error.code.
+            struct Failure: Decodable {
+                struct Detail: Decodable { let code: String? }
+                let code: String?
+                enum CodingKeys: String, CodingKey { case error }
+                init(from decoder: Decoder) throws {
+                    let values = try decoder.container(keyedBy: CodingKeys.self)
+                    code =
+                        (try? values.decode(String.self, forKey: .error))
+                        ?? (try? values.decode(Detail.self, forKey: .error))?.code
+                }
+            }
+            let code = (try? JSONDecoder().decode(Failure.self, from: data))?.code
+            let rejected = [
+                "invalid_grant", "refresh_token_reused", "refresh_token_expired",
+                "refresh_token_invalidated",
+            ]
+            if response.statusCode == 401 || code.map(rejected.contains) == true {
+                throw CodexAuthError.loginRequired
+            }
+            throw CodexAuthError.refreshHTTP(response.statusCode)
+        }
+        guard let result = try? JSONDecoder().decode(RefreshResponse.self, from: data),
+            !result.accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            result.refreshToken?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != true,
+            result.idToken?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != true
+        else { throw CodexAuthError.invalidResponse }
+        var updated = auth
+        updated.tokens?.accessToken = result.accessToken
+        updated.tokens?.refreshToken = result.refreshToken ?? refresh
+        updated.tokens?.idToken = result.idToken ?? auth.tokens?.idToken
+        updated.lastRefresh = ISO8601DateFormatter().string(from: Date())
+        guard updated.accountID == auth.accountID else { throw CodexAuthError.invalidResponse }
+        return updated
     }
 }

@@ -37,7 +37,7 @@ struct SettingsView: View {
                         .controlSize(.small)
                 }
                 Button(loc.string("menu.refresh")) {
-                    Task { await accounts.refreshAll() }
+                    Task { await accounts.refreshAll(retryingRejectedLogins: true) }
                 }
                 .disabled(accounts.isRefreshing || accounts.accounts.isEmpty)
                 Button(loc.string("menu.add_account")) {
@@ -61,7 +61,7 @@ struct SettingsView: View {
                             isActive: accounts.isActive(account),
                             loc: loc,
                             onRename: { accounts.rename(account, to: $0) },
-                            onActivate: { accounts.activate(account) },
+                            onActivate: { Task { await accounts.activate(account) } },
                             onRemove: { pendingRemoval = account }
                         )
                     }

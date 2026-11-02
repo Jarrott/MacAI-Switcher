@@ -36,6 +36,11 @@ done
 for lproj in Sources/AISwitcher/Resources/*.lproj; do
     cp -R "$lproj" "$APP/Contents/Resources/"
 done
+# `Bundle.module` looks for the SwiftPM resource bundle next to the app's
+# resources; newer toolchains no longer fall back to the absolute build path.
+if [ -d "$BUILD_DIR/AISwitcher_AISwitcher.bundle" ]; then
+    cp -R "$BUILD_DIR/AISwitcher_AISwitcher.bundle" "$APP/Contents/Resources/"
+fi
 echo "==> ad-hoc code sign"
 codesign --force --deep --sign - "$APP" 2>/dev/null || echo "(codesign skipped)"
 

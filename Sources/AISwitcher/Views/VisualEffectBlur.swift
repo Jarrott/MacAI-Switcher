@@ -175,9 +175,9 @@ private struct MenuGlassPanelModifier: ViewModifier {
                         VisualEffectBlur(
                             material: .menu,
                             blending: .behindWindow,
-                            alphaValue: 0.10
+                            alphaValue: 0.60
                         )
-                        Color(red: 0.02, green: 0.04, blue: 0.06).opacity(0.016)
+                        Color(red: 0.02, green: 0.04, blue: 0.06).opacity(0.32)
                         LinearGradient(
                             colors: [
                                 Color.white.opacity(0.00768),

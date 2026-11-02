@@ -41,13 +41,6 @@ enum UsageService {
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
         + "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
 
-    private static let session: URLSession = {
-        let cfg = URLSessionConfiguration.ephemeral
-        cfg.timeoutIntervalForRequest = 20
-        cfg.waitsForConnectivity = false
-        return URLSession(configuration: cfg)
-    }()
-
     static let sessionWindowSeconds = 18_000  // 5h
     static let weeklyWindowSeconds = 604_800  // 7d
 
@@ -83,6 +76,7 @@ enum UsageService {
     ///   - creditID: Optional provider credit identifier, preferring the earliest expiry.
     ///   - idempotencyKey: Stable UUID for this logical attempt; reused only for the
     ///     single 401 token-refresh retry so the provider cannot consume twice.
+    ///   - coordinator: Shared authentication recovery; injectable for isolated tests.
     /// - Returns: The provider's explicit reset outcome.
     /// - Throws: `FetchError` for unsupported accounts, credentials, transport, HTTP,
     ///   or an unrecognized response. The method never treats an unknown body as success.
@@ -90,30 +84,11 @@ enum UsageService {
     static func consumeResetCredit(
         for account: Account,
         creditID: String?,
-        idempotencyKey: UUID = UUID()
+        idempotencyKey: UUID = UUID(),
+        coordinator: CodexAuthCoordinator = .shared
     ) async throws -> ResetOutcome {
         guard account.provider == .codex else { throw FetchError.unsupportedProvider }
         guard (account.usage.resetsAvailable ?? 0) > 0 else { throw FetchError.noResetCredit }
-
-        let auth: CodexAuth?
-        if let snapshot = account.credentialSnapshot {
-            auth = CodexCredentialStore.shared.loadSnapshot(snapshot)
-        } else {
-            auth = CodexCredentialStore.shared.currentAuth()
-        }
-        guard let auth,
-            var accessToken = auth.tokens?.accessToken,
-            let accountID = auth.accountID
-        else { throw FetchError.noCredentials }
-
-        if let expiry = auth.accessTokenExpiry, expiry < Date().addingTimeInterval(60),
-            let fresh = await TokenRefresher.refreshCodex(
-                auth: auth,
-                snapshot: account.credentialSnapshot
-            )
-        {
-            accessToken = fresh
-        }
 
         let body = try JSONSerialization.data(
             withJSONObject: resetRequestPayload(
@@ -122,38 +97,19 @@ enum UsageService {
             )
         )
 
-        func request(_ token: String) -> URLRequest {
-            var request = URLRequest(url: codexConsumeResetURL)
-            request.httpMethod = "POST"
-            request.httpBody = body
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            request.setValue(accountID, forHTTPHeaderField: "chatgpt-account-id")
-            request.setValue(browserUA, forHTTPHeaderField: "User-Agent")
-            request.setValue("application/json", forHTTPHeaderField: "Accept")
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("codex-1", forHTTPHeaderField: "openai-beta")
-            request.setValue("Codex Desktop", forHTTPHeaderField: "originator")
-            request.setValue("https://chatgpt.com", forHTTPHeaderField: "Origin")
-            request.setValue("https://chatgpt.com", forHTTPHeaderField: "Referer")
-            return request
-        }
-
-        var (data, response) = try await send(request(accessToken))
-        var http = response as? HTTPURLResponse
-        if http?.statusCode == 401,
-            let fresh = await TokenRefresher.refreshCodex(
-                auth: auth,
-                snapshot: account.credentialSnapshot
-            )
-        {
-            accessToken = fresh
-            (data, response) = try await send(request(accessToken))
-            http = response as? HTTPURLResponse
-        }
-
-        guard let http else { throw FetchError.decode }
-        guard (200..<300).contains(http.statusCode) else {
-            throw FetchError.http(http.statusCode)
+        var request = URLRequest(url: codexConsumeResetURL)
+        request.httpMethod = "POST"
+        request.httpBody = body
+        request.setValue(browserUA, forHTTPHeaderField: "User-Agent")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("codex-1", forHTTPHeaderField: "openai-beta")
+        request.setValue("Codex Desktop", forHTTPHeaderField: "originator")
+        request.setValue("https://chatgpt.com", forHTTPHeaderField: "Origin")
+        request.setValue("https://chatgpt.com", forHTTPHeaderField: "Referer")
+        let (data, response, _) = try await coordinator.send(request, for: account)
+        guard (200..<300).contains(response.statusCode) else {
+            throw FetchError.http(response.statusCode)
         }
         guard let outcome = parseResetOutcome(try decodeJSON(data)) else {
             throw FetchError.decode
@@ -163,67 +119,34 @@ enum UsageService {
 
     // MARK: Codex
 
-    private static func fetchCodex(_ account: Account) async throws -> Usage {
-        // Load the credentials for this account (from its snapshot, or the live file).
-        let auth: CodexAuth?
-        if let snap = account.credentialSnapshot {
-            auth = CodexCredentialStore.shared.loadSnapshot(snap)
-        } else {
-            auth = CodexCredentialStore.shared.currentAuth()
+    /// Fetch Codex usage after synchronizing credentials and applying bounded authentication recovery.
+    /// Injected coordinator/transport isolate token rotation and reset-credit reads in regression tests.
+    /// Authentication or storage failure throws without replacing the last successful usage snapshot.
+    static func fetchCodex(
+        _ account: Account,
+        coordinator: CodexAuthCoordinator = .shared,
+        transport: TokenRefresher.Transport = TokenRefresher.send
+    ) async throws -> Usage {
+        var request = URLRequest(url: codexUsageURL)
+        request.httpMethod = "GET"
+        request.setValue(browserUA, forHTTPHeaderField: "User-Agent")
+        request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+        request.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
+        request.setValue("https://chatgpt.com", forHTTPHeaderField: "Origin")
+        request.setValue("https://chatgpt.com", forHTTPHeaderField: "Referer")
+        let (data, response, auth) = try await coordinator.send(request, for: account)
+        guard (200..<300).contains(response.statusCode) else {
+            throw FetchError.http(response.statusCode)
         }
-        guard let auth,
-            var accessToken = auth.tokens?.accessToken,
-            let accountID = auth.accountID
-        else { throw FetchError.noCredentials }
-
-        // Proactively refresh if the access token is already expired.
-        if let exp = auth.accessTokenExpiry, exp < Date().addingTimeInterval(60) {
-            if let fresh = await TokenRefresher.refreshCodex(
-                auth: auth,
-                snapshot: account.credentialSnapshot)
-            {
-                accessToken = fresh
-            }
-        }
-
-        func request(_ token: String) -> URLRequest {
-            var req = URLRequest(url: codexUsageURL)
-            req.httpMethod = "GET"
-            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            req.setValue(accountID, forHTTPHeaderField: "chatgpt-account-id")
-            req.setValue(browserUA, forHTTPHeaderField: "User-Agent")
-            req.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
-            req.setValue("en-US,en;q=0.9", forHTTPHeaderField: "Accept-Language")
-            req.setValue("https://chatgpt.com", forHTTPHeaderField: "Origin")
-            req.setValue("https://chatgpt.com", forHTTPHeaderField: "Referer")
-            return req
-        }
-
-        var (data, resp) = try await send(request(accessToken))
-        var http = resp as? HTTPURLResponse
-
-        // On 401 (expired/invalid), refresh once and retry. Never on 403 (that's
-        // a Cloudflare challenge, not an auth problem).
-        if http?.statusCode == 401,
-            let fresh = await TokenRefresher.refreshCodex(
-                auth: auth,
-                snapshot: account.credentialSnapshot)
-        {
-            accessToken = fresh
-            (data, resp) = try await send(request(fresh))
-            http = resp as? HTTPURLResponse
-        }
-
-        guard let http else { throw FetchError.decode }
-        guard (200..<300).contains(http.statusCode) else { throw FetchError.http(http.statusCode) }
 
         let payload = try decodeJSON(data)
         var usage = parseCodex(payload)
         // Reset credits are intentionally best-effort. A failure here must not
         // hide otherwise valid 5h/7d usage or masquerade as zero credits.
         if let resetSummary = await fetchCodexResetCredits(
-            accessToken: accessToken,
-            accountID: accountID
+            accessToken: auth.tokens?.accessToken ?? "",
+            accountID: auth.accountID ?? "",
+            transport: transport
         ) {
             usage.resetsAvailable = resetSummary.count
             usage.resetCredits = resetSummary.credits
@@ -272,7 +195,8 @@ enum UsageService {
     /// An unavailable endpoint returns `nil`; callers must never convert it to 0.
     private static func fetchCodexResetCredits(
         accessToken: String,
-        accountID: String
+        accountID: String,
+        transport: TokenRefresher.Transport
     ) async -> (count: Int, credits: [ResetCredit]?)? {
         var req = URLRequest(url: codexResetCreditsURL)
         req.httpMethod = "GET"
@@ -283,9 +207,8 @@ enum UsageService {
         req.setValue("codex-1", forHTTPHeaderField: "openai-beta")
         req.setValue("Codex Desktop", forHTTPHeaderField: "originator")
 
-        guard let (data, response) = try? await session.data(for: req),
-            let http = response as? HTTPURLResponse,
-            (200..<300).contains(http.statusCode),
+        guard let (data, response) = try? await transport(req),
+            (200..<300).contains(response.statusCode),
             let payload = try? decodeJSON(data)
         else { return nil }
         guard let count = parseResetCredits(payload) else { return nil }
@@ -484,14 +407,6 @@ enum UsageService {
     }
 
     // MARK: Helpers
-
-    private static func send(_ req: URLRequest) async throws -> (Data, URLResponse) {
-        do {
-            return try await session.data(for: req)
-        } catch {
-            throw FetchError.network(error.localizedDescription)
-        }
-    }
 
     private static func decodeJSON(_ data: Data) throws -> [String: Any] {
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]

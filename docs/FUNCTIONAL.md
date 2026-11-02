@@ -53,7 +53,9 @@ configured. Placeholder actions must not be presented as working features.
 
 - Codex reads `~/.codex/auth.json`.
 - Claude reads the `Claude Code-credentials` Keychain item, with
-  `~/.claude/.credentials.json` as fallback.
+  `~/.claude/.credentials.json` as fallback. If several items share that service,
+  the one holding a `claudeAiOauth` login is used (current user's account first,
+  then newest).
 - The current login is snapshotted under Application Support before it becomes a
   managed account.
 - Discovery reconciles the live credential with the persisted account and marks
@@ -64,8 +66,27 @@ configured. Placeholder actions must not be presented as working features.
 - Startup discovery begins from AppKit's launch-completion lifecycle instead of
   SwiftUI value initialization, ensuring credential reconciliation runs reliably
   for a menu-bar-only application.
-- Claude identifiers use a deterministic SHA-256-derived credential fingerprint. Legacy snapshots
-  created with Swift `hashValue` are reconciled by credential equality.
+- Claude identifiers come from the account UUID Claude Code records in
+  `~/.claude.json`, because Claude's credential carries no account identifier and
+  rotates both of its tokens on every refresh. A token-derived identifier would
+  change under an unchanged account and show the same login twice. The switcher only
+  reads that file; it never writes it.
+- The recorded account is authoritative exactly when Claude Code produced the live
+  credential. When a managed snapshot already owns the live tokens, the switcher
+  wrote them, and that snapshot's identity and identifier are kept instead — right
+  after a switch the CLI's record still names the account it replaced.
+- Without a recorded account, identifiers fall back to a deterministic SHA-256
+  credential digest. Legacy snapshots created with Swift `hashValue`, and snapshots
+  predating identity resolution, are reconciled by credential equality.
+- Resolved identity is stored only in the owner-only snapshot, as
+  `aiSwitcherAccountIdentity`. It is stripped from every write back to the Keychain
+  or the CLI's fallback file.
+- The Claude account label is the local part of the recorded email, so two logins
+  are distinguishable. It stays "Claude" until an identity resolves, and a resolved
+  label is never downgraded back to the placeholder.
+- Switching snapshots the live credential before replacing it, so a rotation the CLI
+  performed since discovery is not lost with the slot. A live login the switcher does
+  not recognize is kept as its own account instead of being discarded.
 
 For Codex shared-server login caching, local terminal integration, identity
 verification and safe session recovery, see [CODEX_TERMINALS.md](CODEX_TERMINALS.md).
@@ -113,6 +134,35 @@ isolated temporary thread; Tab accepts text and Enter never implicitly accepts i
 - Import Credential File accepts one JSON file, validates it against the selected
   provider, and creates an owner-only managed snapshot without replacing the live
   CLI credential. Invalid, unreadable, or identity-less files show an error.
+
+## Codex login recovery (401)
+
+- Refresh Now and the timer resolve the managed account ID against the live Codex
+  credential before using a saved snapshot. A matching CLI token rotation is saved
+  automatically; a different account is never used as fallback.
+- Expired access tokens are renewed proactively. Each operation exchanges tokens
+  at most once and retries a 401 at most once. A 403/429 response does not trigger
+  renewal. Concurrent usage and reset requests share an in-flight exchange.
+- New tokens must be saved before the retry. Snapshot conflicts and secure-write
+  failures are visible errors. A snapshot-only predecessor digest lets a subsequent
+  attempt repair a failed live write without reusing the retired refresh token.
+  If snapshot storage fails, the exchanged generation is retained in memory for
+  another save attempt; restarting before storage recovers can require authorization.
+- Definitively rejected refresh tokens are held in memory until the token changes,
+  including during manual refresh. Transient failures remain retryable. This state
+  is cleared on app restart; it does not change persisted account data.
+- The error text directs the user to Add Account. Import Current Login reuses a
+  valid current CLI login without another browser flow. Sign In with Browser to
+  the **same account** updates its existing UUID, custom name and usage in place.
+  No deletion is required, including for an active account. A different login
+  remains a separate account.
+- Revoked/expired refresh credentials still need valid replacement credentials or
+  a new browser authorization. Last successful usage remains visible during failure.
+- This recovery uses the existing file-backed Codex store. It does not read Codex
+  OS-keyring-only credentials or custom `CODEX_HOME` locations. External CLI writes
+  are rechecked but are not part of an atomic cross-process transaction.
+- `AISWITCHER_SCENARIO=codex-auth-error` with `AISWITCHER_RENDER` displays synthetic
+  error-state previews in English and Chinese without credential access or HTTP.
 
 ## Account settings
 
@@ -211,8 +261,15 @@ isolated temporary thread; Tab accepts text and Enter never implicitly accepts i
 - Provider metadata outside the owned OAuth fields is preserved during writes.
 - English and Chinese distinguish renewal rejection, transient HTTP/network errors,
   malformed responses, persistence failures and credentials changed during renewal.
-- If both tokens were replaced independently with no provable continuity, the app
-  keeps the account snapshots separate. Import Current Login establishes the current
+- A rotation Claude Code performed outside the app is adopted into the snapshot when
+  the recorded account matches, so a superseded refresh token is never presented
+  again. Replaying one is token reuse, which the provider may answer by revoking the
+  whole token family, including the login the CLI is using.
+- A credential the provider rejected with `invalid_grant` is not retried by the
+  five-minute timer. The error stays visible, and the latch releases when the
+  snapshot holds a different generation or the user refreshes explicitly.
+- If both tokens were replaced independently with no provable continuity and no
+  recorded account resolves, the app keeps the account snapshots separate. Import Current Login establishes the current
   credential; a revoked refresh token may require signing in again once. The app
   cannot restore tokens revoked by the provider or guarantee persistence when macOS
   denies access to its credential storage.

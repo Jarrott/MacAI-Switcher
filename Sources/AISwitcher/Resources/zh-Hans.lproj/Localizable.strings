@@ -50,7 +50,7 @@
 
 /* 添加账号 */
 "add_account.title" = "添加账号";
-"add_account.login_instructions" = "浏览器登录会调用已安装的服务商 CLI；OAuth 完成后将自动导入凭据。下方命令保留为手动登录备用方式。";
+"add_account.login_instructions" = "浏览器登录会调用已安装的服务商 CLI；OAuth 完成后将自动导入凭据。下方命令保留为手动登录备用方式。 重新登录已有账号会更新原记录，无需先删除账号。";
 "add_account.copy_command" = "复制";
 "add_account.open_terminal" = "打开终端";
 "add_account.browser_login" = "使用浏览器登录";
@@ -110,3 +110,12 @@
 "claude.auth.invalid_response" = "Claude 返回的令牌刷新数据无效。";
 "claude.auth.persistence" = "无法保存 Claude 凭证，请检查钥匙串访问权限和文件权限。";
 "claude.auth.changed" = "Claude 凭证在刷新期间发生变化，请再次刷新。";
+
+/* Codex authentication recovery */
+"codex.auth.missing" = "Codex 凭证不可用，请在“添加账号”中导入当前登录。";
+"codex.auth.login_required" = "Codex 登录已失效，请在“添加账号”中重新授权，无需删除账号。";
+"codex.auth.network" = "无法连接 Codex，请稍后刷新。";
+"codex.auth.refresh_http" = "Codex 令牌刷新失败（HTTP %d），请稍后重试。";
+"codex.auth.invalid_response" = "Codex 返回的令牌刷新数据无效。";
+"codex.auth.persistence" = "无法保存 Codex 凭证，请检查文件权限。";
+"codex.auth.changed" = "Codex 凭证在刷新期间发生变化，请再次刷新。";

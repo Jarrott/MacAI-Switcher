@@ -101,14 +101,16 @@ private enum ProviderBrandArtwork {
 
     /// Resolve one SVG from production resources, then the SwiftPM development bundle.
     private static func load(resource: String) -> NSImage? {
-        for bundle in [Bundle.main, Bundle.module] {
-            guard let url = bundle.url(forResource: resource, withExtension: "svg"),
-                let image = NSImage(contentsOf: url)
-            else {
-                continue
-            }
-            return image
+        // `Bundle.module` traps when the SwiftPM resource bundle is absent, so it
+        // is only consulted after the packaged app resources miss.
+        if let image = load(resource: resource, from: .main) { return image }
+        return load(resource: resource, from: .module)
+    }
+
+    private static func load(resource: String, from bundle: Bundle) -> NSImage? {
+        guard let url = bundle.url(forResource: resource, withExtension: "svg") else {
+            return nil
         }
-        return nil
+        return NSImage(contentsOf: url)
     }
 }
