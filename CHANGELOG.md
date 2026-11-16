@@ -186,5 +186,8 @@
 
 ### Documentation and tests
 
+- Reorganize the English README around setup and everyday account management,
+  add a matching Simplified Chinese guide, and document supported credential
+  stores, local data, troubleshooting, development checks, and optional extensions.
 - Added project-level development instructions, functional/API documentation,
   and parser tests for Codex and Claude usage payloads.

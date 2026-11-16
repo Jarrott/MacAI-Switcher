@@ -1,209 +1,257 @@
 # AI Switcher
 
-A native macOS menu bar app that switches between multiple AI accounts and shows
-their usage limits — a clone of "Codex Switcher", extended to support **Claude**
-in addition to **Codex/OpenAI**, with **English + 简体中文** localization.
+**Switch Codex and Claude accounts from your Mac’s menu bar.**
+
+Keep multiple CLI logins in one place, see their remaining quota, and choose the
+account you want to use next. Built with SwiftUI and AppKit for macOS, with English
+and Simplified Chinese interfaces.
+
+**English** · [简体中文](README.zh-CN.md)
+
+[Quick start](#quick-start) · [Usage](#usage) · [Compatibility](#compatibility) ·
+[Troubleshooting](#troubleshooting) · [Development](#development) · [Documentation](#documentation)
 
 <p align="center">
-  <img src="docs/images/menu-preview.png" alt="AI Switcher menu bar dropdown showing Codex and Claude accounts with usage bars" width="420">
+  <img src="docs/images/menu-preview.png" alt="AI Switcher menu showing Codex and Claude accounts, remaining quota, reset dates, and account actions in Chinese" width="360">
 </p>
 
 ## Features
 
-- **Compact menu bar dropdown** inspired by the reference: native translucent panel, branded
-  OpenAI/Codex and Anthropic/Claude sections with official compact provider artwork, per-account
-  cards with a ✓ for the active account, segmented 5h / 7d remaining-quota bars (red below 10%,
-  yellow from 10% through 50%, and green above 50%),
-  percentages, reset dates, refresh status, verified reset-credit availability,
-  confirmed reset redemption, accumulated runtime, and a hover-opened account submenu
-  for one-click switching.
-- **Multi-account switching** — activating an account swaps the underlying CLI
-  credential so the `codex` (or `claude`) CLI uses that login. Active state is
-  tracked independently for each provider.
-- **Working account management** — Add Account can run the installed provider
-  CLI's browser OAuth flow and automatically import the resulting credential,
-  import an existing current login, or validate a credential JSON file. Account
-  Settings supports custom names, activation, refresh, language selection, and
-  confirmed removal of inactive account snapshots.
-- **Transactional Codex OAuth** — browser sign-in uses an isolated temporary
-  `CODEX_HOME`, so closing or cancelling the browser cannot log out the currently
-  selected account. A new credential is activated only after successful validation.
-- **Live usage** fetched from the provider APIs:
-  - Codex: `GET https://chatgpt.com/backend-api/wham/usage`
-  - Codex reset credits: `GET https://chatgpt.com/backend-api/wham/rate-limit-reset-credits`
-  - Codex reset redemption: `POST https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume`
-  - Claude: `GET https://api.anthropic.com/api/oauth/usage`
-- **OAuth refresh** for expired Codex and Claude access tokens, including
-  rotated-token persistence to the managed account snapshot. Claude uses the current
-  OAuth endpoint, checks related live CLI credentials before renewal, coalesces
-  overlapping requests, and reports refresh/storage errors separately.
-- **Auto-refresh** every 5 minutes, plus a manual "Refresh Now".
-- **Persistent runtime** — accumulated running time is saved to local SQLite every
-  minute and on normal exit. Restarting continues the total; time while the app is
-  closed is excluded. Preview rendering never changes the runtime database.
-- **Launch at Login** via `SMAppService`.
-- **Localization**: follows the system language, or force English / 简体中文 in
-  Account Settings. Switches instantly, no relaunch.
+- **Multiple accounts, two providers.** Keep one Codex account and one Claude
+  account active independently. Switch from an account’s title or the account submenu.
+- **Quota at a glance.** View remaining 5-hour and 7-day capacity, reset dates,
+  and plan information when the provider supplies them.
+- **Three ways to add accounts.** Sign in through the installed CLI’s browser
+  flow, import its current login, or import a credential JSON file.
+- **Credential recovery.** Refresh expired OAuth tokens and reconcile matching
+  CLI token rotations. Reauthorize an existing account without deleting its row.
+- **Codex reset credits.** View available credits and redeem one only after an
+  explicit confirmation, when supported by the account.
+- **Native desktop controls.** Automatic usage refresh every five minutes,
+  manual refresh, custom account names, launch at login, persistent total runtime,
+  and instant language switching.
 
-## Provider details
+## Quick start
 
-| | Codex (OpenAI) | Claude (Anthropic) |
-|---|---|---|
-| Credential | `~/.codex/auth.json` | macOS Keychain `Claude Code-credentials` (file fallback `~/.claude/.credentials.json`) |
-| Account identity | JWT claim `chatgpt_account_id` | `oauthAccount.accountUuid` in `~/.claude.json` (read-only) |
-| Plan tier | JWT claim `chatgpt_plan_type` | `claudeAiOauth.subscriptionType` |
-| Usage endpoint | `/backend-api/wham/usage` | `/api/oauth/usage` |
-| 5h / 7d source | `rate_limit.primary_window` / `secondary_window`, classified by `limit_window_seconds` (18000 / 604800) | `five_hour.utilization` / `seven_day.utilization` |
-| Token refresh | `auth.openai.com/oauth/token` | `platform.claude.com/v1/oauth/token` |
+### Requirements
 
-Claude's credential contains no account identifier and rotates both of its tokens
-on every refresh, so identity is read from the account block Claude Code keeps in
-`~/.claude.json`. The app never writes that file. Without it, accounts fall back to
-a credential digest and a rotation performed by the CLI can look like a new login.
+| Requirement | Details |
+| --- | --- |
+| Operating system | macOS 14 Sonoma or later |
+| Build tools | Swift 6.0+ and a macOS SDK, supplied by a compatible Xcode or Command Line Tools installation |
+| Provider login | A Codex ChatGPT OAuth login and/or a Claude Code OAuth login |
+| Browser sign-in | The corresponding `codex` or `claude` CLI must be installed |
+| Network | Required for browser sign-in, usage refresh, and reset-credit redemption |
 
-Account switching means snapshotting each account's credential into
-`~/Library/Application Support/AISwitcher/{codex,claude}-accounts/` and writing the
-chosen snapshot back to the live location. The credential that is live at that
-moment is snapshotted first, so a rotation the CLI performed in the meantime is not
-lost with the slot. Credential files are written atomically with owner-only (`0600`)
-permissions.
+The Swift package has no third-party package dependencies and uses the system
+SQLite library. You only need the provider you intend to use.
 
-Codex CLI 0.159.0 can attach new terminals to an already-running shared server
-whose cached login differs from that file. For account switching with local zsh
-terminals, use the optional [Codex shell integration](docs/CODEX_TERMINALS.md),
-which launches interactive sessions with `--no-daemon`. Existing sessions still
-need a separate, idle-only restart; the switcher does not hot-swap running sessions.
-For the 0.159.0 `/status` email-display regression, see the optional
-[version-specific client repair](docs/CODEX_STATUS_EMAIL.md).
-The same private client can provide [rounded input styling and AI request
-suggestions](docs/CODEX_INPUT.md), with explicit Tab acceptance and an opt-out.
-
-Codex 401 recovery first reloads the matching live CLI credential, then performs at
-most one OAuth exchange and one request retry. Usage and reset actions share token
-renewal, and rotated credentials are saved before use. A rejected refresh token is
-not exchanged again in the running app until that token changes. This follows the
-[official credential lifecycle](https://learn.chatgpt.com/docs/auth#login-caching),
-where Codex can update its cached tokens while it runs.
-
-**You do not need to delete an account to repair its login.** Try Refresh Now first.
-If the CLI already has a valid login, choose Add Account → Codex → Import Current
-Login. If authorization has been revoked or expired, choose Sign In with Browser
-and sign in to the same account. The existing row, custom name, and last-known usage
-are retained. A rejected refresh token cannot be repaired without a valid replacement
-or user authorization. These recovery paths currently use `~/.codex/auth.json`;
-OS-keyring-only and custom `CODEX_HOME` credentials are outside this store's support.
-
-Claude token renewal saves the new credential before retrying usage and never
-reuses a refresh token that it already exchanged in the same request. Newer live
-credentials are adopted only when token continuity proves they belong to the saved
-account. If both tokens were independently replaced and ownership cannot be verified,
-use Import Current Login; the app does not guess from the active checkmark or label.
-A revoked refresh token still requires a valid current login or a new sign-in.
-
-Unknown provider values stay unknown. In particular, a failed reset-credit
-request is shown as unavailable rather than as a real zero.
-
-In the compact menu, only account titles switch accounts. Usage bars and dates
-are read-only. A positive reset-credit line is a full-width action with a strong,
-non-bypassable confirmation alert and explicit cancel action. Only the destructive
-confirmation consumes a credit; the idempotent result is followed by a usage refresh.
-
-Hovering Account Settings opens a compact list of managed logins. The current
-provider account is checkmarked, account rows switch immediately, and Manage
-Accounts opens the full rename/remove/settings window.
-
-## Build & run
+### Build and launch
 
 ```bash
-./build-app.sh release        # builds .build/release/AI Switcher.app
+git clone https://github.com/Jarrott/MacAI-Switcher.git
+cd MacAI-Switcher
+./build-app.sh release
 open ".build/release/AI Switcher.app"
 ```
 
-`swift build` alone produces a bare binary; `build-app.sh` assembles the proper
-`.app` bundle (with `LSUIElement` so it's a menu-bar agent with no Dock icon) and
-copies localized strings and menu artwork into the standard
-`Contents/Resources` directory.
+If you already have a checkout, run the last two commands from its root directory.
+The script builds the executable, bundles artwork and translations, and attempts
+ad-hoc signing. `swift build` alone does not assemble the `.app` bundle.
 
-### UI preview without clicking the menu bar
+Look for the switching icon in the **macOS menu bar**; the app has no Dock icon or
+main window. For regular use, quit the app, copy `AI Switcher.app` to Applications
+in Finder, and launch that copy. Enable **Launch at Login** from its menu if desired.
+
+## Usage
+
+### Add your first account
+
+At startup, AI Switcher looks for existing logins in the supported credential
+stores. To add or repair a login, open **Add Account**, select **Codex** or
+**Claude**, and choose an option:
+
+| Option | When to use it | Result |
+| --- | --- | --- |
+| **Sign In with Browser** | Add another login or authorize an expired one | Runs the provider CLI’s OAuth flow, then imports and activates the validated login |
+| **Import Current Login** | The CLI is already signed in | Saves or updates that login and marks it active for the provider |
+| **Import Credential File** | You have a compatible provider credential JSON file | Validates and saves it; the current CLI login is not replaced until you activate it |
+
+For a terminal-based login, use the appropriate command, then select
+**Import Current Login**:
 
 ```bash
-AISWITCHER_RENDER=/tmp/en.png AISWITCHER_LANG=en       .build/release/AISwitcher
-AISWITCHER_RENDER=/tmp/zh.png AISWITCHER_LANG=zh-Hans  .build/release/AISwitcher
-AISWITCHER_RENDER=/tmp/auth.png AISWITCHER_SCENARIO=codex-auth-error AISWITCHER_LANG=zh-Hans .build/release/AISwitcher
-AISWITCHER_RENDER=/tmp/real.png AISWITCHER_REAL=1      .build/release/AISwitcher   # real persisted data
-AISWITCHER_RENDER=/tmp/switcher.png AISWITCHER_SURFACE=account-switcher .build/release/AISwitcher
+codex login          # Codex / ChatGPT
+claude auth login    # Claude Code
 ```
 
-## Runtime storage
+Repeat for additional accounts. **Account Settings** lets you rename accounts,
+activate a saved login, remove an inactive account after confirmation, and choose
+the interface language. Active accounts cannot be removed until you switch away.
 
-The menu's accumulated runtime is stored in
-`~/Library/Application Support/AISwitcher/runtime.sqlite`. The database contains
-only an integer duration in milliseconds; accounts and tokens stay in their existing
-stores. Older versions did not save runtime history, so the first run of this
-version starts a new total. Subsequent launches continue it automatically.
+### Switch accounts
 
-See [docs/DATABASE.md](docs/DATABASE.md) for schema migration and backup/rollback details.
+1. Click an account’s **title**, or hover **Account Settings** and select a login.
+2. Check the **✓** beside the selected account. Codex and Claude each have their
+   own active selection.
+3. Start a CLI session that loads the selected credential.
 
-## Notes / limitations
+The app snapshots the current live credential before replacing it. An existing
+CLI session or shared background server may still hold its previous login;
+the checkmark confirms credential selection, not a running session’s identity.
+See [Codex terminal integration](docs/CODEX_TERMINALS.md) for the optional zsh
+launcher, shared-server behavior, and safe session restart instructions.
 
-- Claude Keychain reads and writes use the same `/usr/bin/security` identity as
-  Claude Code. Permission metadata is checked without interaction before invoking
-  it; locked or incompatible items are unavailable rather than repeatedly
-  prompting. When several items share the service (newer Claude Code versions can
-  leave an MCP-only item beside the login), the app uses the first one holding a
-  `claudeAiOauth` login, preferring the current macOS user's account, then the
-  most recently modified item. Native secret updates must not be used: they can replace the partition
-  ACL with the ad-hoc app's code hash. Credential bytes travel through pipes, never
-  command arguments or logs, and writes are verified by reading back the result.
-- Older builds may have left a Claude item bound to AI Switcher's code hash. That
-  item needs a one-time, password-authorized partition repair; see
-  [Claude Keychain recovery](docs/FUNCTIONAL.md#claude-keychain-recovery).
-- A missing Claude Keychain item must first be initialized by Claude's own login
-  flow. A fallback file alone is not reported as a successful macOS account switch.
-- Provider usage endpoints are undocumented backend APIs and may change. The app
-  preserves the last successful snapshot and surfaces a per-account error when a
-  refresh fails.
-- Purchase actions are intentionally hidden until a real StoreKit product and
-  restore flow are configured.
-- OpenAI and Anthropic/Claude names and provider artwork remain the property of
-  their respective owners. They are shown only to identify supported services and
-  do not imply endorsement, sponsorship, or partnership.
+### Read usage and reset credits
 
-## Project layout
+Percentages show **remaining quota**: red below 10%, yellow from 10% through 50%,
+and green above 50%. Missing usage or reset dates appear as `--%` / `--`.
+Unavailable reset-credit data is never treated as zero.
 
+Usage bars and dates are read-only. A positive Codex reset-credit row opens a
+confirmation dialog; only confirming sends the redemption request. Refresh
+failures retain the last successful usage snapshot and display an account error,
+so cached values may be out of date.
+
+With the menu open:
+
+| Shortcut | Action |
+| --- | --- |
+| `⌘N` | Add Account |
+| `⌘R` | Refresh Now |
+| `⌘L` | Toggle Launch at Login |
+| `⌘Q` | Quit |
+
+## Compatibility
+
+| Capability | Codex / OpenAI | Claude / Anthropic |
+| --- | --- | --- |
+| Managed login | ChatGPT OAuth through Codex CLI | Claude Code OAuth |
+| Live credential | `~/.codex/auth.json` | macOS Keychain service `Claude Code-credentials` |
+| Additional local data | Account identity from the credential | File fallback at `~/.claude/.credentials.json`; identity read from `~/.claude.json` |
+| Usage | 5-hour / 7-day windows when returned | 5-hour / 7-day windows when returned |
+| Manual reset credits | When available from the provider | Not supported |
+| Active accounts | One | One, independent of Codex |
+
+Codex credentials stored only in the OS keyring or under a custom `CODEX_HOME`
+are not managed by the current store. API-key-only profiles are not supported by
+the account import flow. Claude switching requires a writable, initialized
+Keychain login item; a fallback file alone cannot complete a macOS switch.
+
+Usage and reset-credit integrations rely on undocumented provider backend APIs,
+which can change. Available fields and actions depend on the account and provider
+response. Request formats and recovery behavior are documented in [API.md](docs/API.md).
+
+## Local data and credentials
+
+App-managed data lives under `~/Library/Application Support/AISwitcher/`:
+
+| Path | Contents |
+| --- | --- |
+| `accounts.json` | Account metadata, custom names, active selections, and cached usage |
+| `codex-accounts/` | Saved Codex credential snapshots |
+| `claude-accounts/` | Saved Claude credential snapshots |
+| `runtime.sqlite` | Accumulated app runtime in milliseconds; no credentials or event history |
+
+Credential snapshots are sensitive JSON files, written atomically with owner-only
+`0600` permissions inside `0700` snapshot directories. They are **not an encrypted
+vault**. Keep snapshots, live credentials, and account metadata out of commits,
+issue attachments, and shared screenshots.
+
+The app communicates directly with provider services for usage, token refresh,
+and confirmed reset actions. Claude credentials also use the macOS Keychain;
+`~/.claude.json` is read only. Codex browser sign-in runs in a temporary isolated
+`CODEX_HOME` and activates the new credential only after validation.
+
+Runtime is saved every minute and on normal exit; time while the app is closed
+does not count. See [database documentation](docs/DATABASE.md) for backup and
+rollback procedures.
+
+## Troubleshooting
+
+| Symptom | What to do |
+| --- | --- |
+| No window appears after launch | Open the menu-bar icon. This is a menu-bar app with no Dock icon. |
+| Browser sign-in cannot find a CLI | Confirm the chosen provider is installed and its login command runs in Terminal. You can sign in there, then use **Import Current Login**. |
+| Codex reports an expired login or 401 | Try **Refresh Now**, then import a valid current CLI login. If authorization was revoked, sign in with the browser to the **same account**; its row, custom name, and cached usage are retained. |
+| Claude cannot refresh or activate | Use **Import Current Login** for a valid CLI login, or sign in again. A missing Keychain item must first be initialized by Claude’s login flow. For permission errors or repeated prompts, see [Keychain recovery](docs/FUNCTIONAL.md#claude-keychain-recovery). |
+| A terminal still uses the previous Codex account | Follow [terminal integration and session recovery](docs/CODEX_TERMINALS.md). Already-running sessions are not switched automatically. |
+| Quota or reset credits show unavailable | Check the account error and refresh again. The provider may omit the field or reject the request; unavailable does not mean zero. |
+
+## Development
+
+From the repository root, run the checks relevant to your change:
+
+```bash
+swift format lint --configuration .swift-format --recursive Sources Tests Package.swift
+swift test
+./build-app.sh release
 ```
+
+Tests use synthetic provider payloads, injected transports, and isolated temporary
+storage. The regular suite does not require live provider credentials. Optional
+shell-integration and Keychain checks are described in the linked feature docs.
+
+### UI previews
+
+After a release build, render both interface languages without opening the menu:
+
+```bash
+AISWITCHER_RENDER=/tmp/aiswitcher-en.png AISWITCHER_LANG=en \
+  .build/release/AISwitcher
+AISWITCHER_RENDER=/tmp/aiswitcher-zh.png AISWITCHER_LANG=zh-Hans \
+  .build/release/AISwitcher
+```
+
+Previews use synthetic accounts by default, require no provider requests, and do
+not change the runtime database. Additional environment options:
+
+| Variable | Value | Purpose |
+| --- | --- | --- |
+| `AISWITCHER_SCENARIO` | `codex-auth-error` | Preview the Codex authentication error state |
+| `AISWITCHER_SURFACE` | `account-switcher` | Render the account submenu |
+| `AISWITCHER_REAL` | `1` | Opt in to saved account/usage data; the image may contain personal information |
+
+### Project structure
+
+```text
 Sources/AISwitcher/
-  Models/Account.swift          # Provider, PlanTier, UsageWindow, Usage, Account
-  Services/
-    CodexCredentialStore.swift  # ~/.codex/auth.json read/snapshot/swap + JWT
-    ClaudeCredentialStore.swift # credential snapshots and synchronization
-    ClaudeProfileStore.swift    # stable Claude account identity from ~/.claude.json
-    ClaudeKeychainStore.swift   # permission preflight and bounded system-tool I/O
-    UsageService.swift          # /wham/usage + /api/oauth/usage
-    TokenRefresher.swift        # typed Codex OAuth exchange and safe errors
-    CodexAuthCoordinator.swift  # shared renewal and bounded 401 recovery
-    ClaudeOAuthService.swift    # Claude OAuth exchange, errors and request coalescing
-    SecureFileWriter.swift      # atomic owner-only credential writes
-    AccountsManager.swift       # discovery, import, rename/remove, switching, refresh
-    AppRuntime.swift            # runtime lifecycle and periodic checkpoints
-    RuntimeTracker.swift        # saved total + monotonic unsaved interval
-    RuntimeStore.swift          # one-row SQLite runtime repository
-    RuntimeStore+Migrations.swift # versioned SQLite schema migration
-    LocalizationManager.swift   # en / zh-Hans, live switching
-    LaunchAtLogin.swift         # SMAppService wrapper
-    JWT.swift
-  Views/
-    MenuContentView.swift       # the dropdown and stable provider grouping
-    ProviderBrandView.swift     # official artwork loading + provider accents
-    ProviderSectionView.swift   # branded OpenAI / Anthropic menu sections
-    AccountCardView.swift  UsageRow.swift  MenuActionRow.swift
-    AddAccountView.swift  SettingsView.swift  VisualEffectBlur.swift
-  Resources/{en,zh-Hans}.lproj/Localizable.strings
-Tests/AISwitcherTests/          # provider payload and model tests
-docs/FUNCTIONAL.md              # behavior and UI states
-docs/API.md                     # provider endpoint contracts
-docs/DATABASE.md                # local SQLite schema, lifecycle and rollback
+  AISwitcherApp.swift     # App entry point and lifecycle
+  Models/                # Accounts, plans, usage windows, reset credits
+  Services/              # Account state, credential stores, provider HTTP, runtime
+  Views/                 # Menu panel, account management, native controls
+  Resources/             # Artwork and English / Simplified Chinese strings
+  PreviewRenderer.swift  # Offscreen UI previews
+Tests/AISwitcherTests/    # Usage, authentication, switching, and persistence tests
+scripts/                 # Optional Codex shell integration and validation tools
+patches/                 # Optional version-specific Codex client patches
+docs/                    # Functional, API, storage, and integration documentation
 ```
 
-See [CHANGELOG.md](CHANGELOG.md) for implementation changes and
-[AGENTS.md](AGENTS.md) for project-specific development rules.
+Read [AGENTS.md](AGENTS.md) before contributing. Keep credential access in the
+provider stores and account state in `AccountsManager`; update both localizations
+for UI text and add synthetic parser tests for new provider response mappings.
+Keep both READMEs and the relevant feature docs in sync when behavior changes.
+
+## Documentation
+
+| Document | Covers |
+| --- | --- |
+| [Functional specification](docs/FUNCTIONAL.md) | Account flows, UI behavior, login recovery, and Claude Keychain repair |
+| [Provider API reference](docs/API.md) | Usage payloads, OAuth renewal, and reset-credit contracts |
+| [Local database](docs/DATABASE.md) | Runtime schema, migration, backup, and rollback |
+| [Codex terminal integration](docs/CODEX_TERMINALS.md) | Optional zsh launcher and existing-session handling |
+| [Codex status email repair](docs/CODEX_STATUS_EMAIL.md) | Optional client patch scoped to Codex 0.159.0 |
+| [Codex input extension](docs/CODEX_INPUT.md) | Optional rounded input and AI draft suggestions for that patched client |
+| [Changelog](CHANGELOG.md) | Implementation changes and fixes |
+
+The Codex client patches are separate, optional extensions; building AI Switcher
+does not build or install a patched Codex CLI.
+
+## Project notes
+
+AI Switcher is an independent tool. OpenAI, Codex, Anthropic, Claude, and their
+artwork belong to their respective owners; their use identifies supported services
+and does not imply endorsement or partnership.
+
+This repository does not currently include a license file.
