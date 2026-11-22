@@ -39,9 +39,11 @@ final class AccountsManager {
     static let shared = AccountsManager()
 
     private(set) var accounts: [Account] = []
-    /// Codex and Claude have independent live credentials, so each provider can
-    /// have one active account at the same time.
+    /// Codex, Claude, and Gemini have independent live credentials, so each
+    /// provider can have one active account at the same time.
     private(set) var activeAccountIDs: [Provider: UUID] = [:]
+    /// User-configurable display order of provider sections, persisted across launches.
+    private(set) var providerOrder: [Provider] = Provider.allCases
 
     var isRefreshing = false
     private(set) var resettingAccountIDs: Set<UUID> = []
@@ -60,13 +62,20 @@ final class AccountsManager {
     private let claudeStore: ClaudeCredentialStore
     /// Codex paths are injectable so import/recovery tests never touch real credentials.
     private let codexStore: CodexCredentialStore
+    /// Gemini paths are injectable so import/recovery tests never touch real credentials.
+    private let geminiStore: GeminiCredentialStore
+    /// Antigravity (`agy`) statusLine usage cache store; injectable for tests.
+    private let antigravityStore: AntigravityUsageStore
     /// Usage transport, injected so refresh behavior is testable without network.
     private let fetchUsage: @Sendable (Account) async throws -> Usage
 
     init(
         ephemeral: Bool = false,
+        persistenceURL: URL? = nil,
         claudeStore: ClaudeCredentialStore = .shared,
         codexStore: CodexCredentialStore = .shared,
+        geminiStore: GeminiCredentialStore = .shared,
+        antigravityStore: AntigravityUsageStore = .shared,
         fetchUsage: @escaping @Sendable (Account) async throws -> Usage = {
             try await UsageService.fetch(for: $0)
         }
@@ -74,18 +83,67 @@ final class AccountsManager {
         self.ephemeral = ephemeral
         self.claudeStore = claudeStore
         self.codexStore = codexStore
+        self.geminiStore = geminiStore
+        self.antigravityStore = antigravityStore
         self.fetchUsage = fetchUsage
-        let support = FileManager.default
-            .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("AISwitcher", isDirectory: true)
-        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
-        persistenceURL = support.appendingPathComponent("accounts.json")
+        if let persistenceURL {
+            try? FileManager.default.createDirectory(
+                at: persistenceURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            self.persistenceURL = persistenceURL
+        } else {
+            let support = FileManager.default
+                .urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("AISwitcher", isDirectory: true)
+            try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+            self.persistenceURL = support.appendingPathComponent("accounts.json")
+        }
         if !ephemeral { load() }
     }
 
     /// Compatibility accessor used for the menu-bar icon and legacy snapshots.
     var activeAccountID: UUID? {
-        activeAccountIDs[.codex] ?? activeAccountIDs[.claude]
+        activeAccountIDs[.codex] ?? activeAccountIDs[.claude] ?? activeAccountIDs[.gemini]
+    }
+
+    /// Providers that currently have at least one managed account, in user-chosen section order.
+    var visibleProviders: [Provider] {
+        Self.visibleProviders(in: accounts, order: providerOrder)
+    }
+
+    /// Accounts belonging to one provider in their persisted display order.
+    func accounts(for provider: Provider) -> [Account] {
+        accounts.filter { $0.provider == provider }
+    }
+
+    /// All managed accounts ordered first by provider section order, then within-provider order.
+    var orderedAccounts: [Account] {
+        visibleProviders.flatMap { provider in
+            accounts.filter { $0.provider == provider }
+        }
+    }
+
+    /// Normalize a stored provider order so every supported provider appears exactly once.
+    nonisolated static func normalizedProviderOrder(_ stored: [Provider]?) -> [Provider] {
+        var result: [Provider] = []
+        for provider in stored ?? [] where !result.contains(provider) {
+            result.append(provider)
+        }
+        for provider in Provider.allCases where !result.contains(provider) {
+            result.append(provider)
+        }
+        return result
+    }
+
+    /// Return only providers that have accounts, ordered by `order` (defaulting to `Provider.allCases`).
+    nonisolated static func visibleProviders(
+        in accounts: [Account],
+        order: [Provider] = Provider.allCases
+    ) -> [Provider] {
+        normalizedProviderOrder(order).filter { provider in
+            accounts.contains { $0.provider == provider }
+        }
     }
 
     /// Whether this account owns its provider's live CLI credential.
@@ -144,10 +202,21 @@ final class AccountsManager {
             resetsAvailable: nil,
             fetchedAt: Date()
         )
-        accounts = [a, b, c]
+        var d = Account(
+            provider: .gemini, label: "gemini-dev", email: nil,
+            plan: .pro, accountID: "mock-4", credentialSnapshot: nil)
+        d.usage = Usage(
+            fiveHour: UsageWindow(usedFraction: 0.22, resetsAt: date(9)),
+            sevenDay: UsageWindow(usedFraction: 0.08, resetsAt: date(9)),
+            resetsAvailable: nil,
+            fetchedAt: Date()
+        )
+        providerOrder = Provider.allCases
+        accounts = [a, b, c, d]
         if codexAuthError { record(CodexAuthError.loginRequired, for: a.id) }
         activeAccountIDs[.codex] = a.id
         activeAccountIDs[.claude] = c.id
+        activeAccountIDs[.gemini] = d.id
         trialRemaining = 2 * 86_400 + 16 * 3_600 + 52 * 60
     }
 
@@ -169,8 +238,79 @@ final class AccountsManager {
     /// the main actor. Codex is committed before the potentially slower Claude
     /// Keychain read, so Claude access cannot delay restoring the Codex checkmark.
     /// A missing provider credential clears only that provider's active marker.
+    /// Whether Antigravity CLI (`agy`) is installed on this Mac.
+    var isAntigravityCLIInstalled: Bool {
+        antigravityStore.isCLIInstalled()
+    }
+
+    /// Whether Antigravity (`agy`) `statusLine` usage recording is configured.
+    var isAntigravityRecorderInstalled: Bool {
+        antigravityStore.isRecorderInstalled()
+    }
+
+    /// Whether Gemini CLI (`gemini`) is installed on this Mac.
+    var isGeminiCLIInstalled: Bool {
+        CLIBrowserLoginService.executableURL(named: "gemini") != nil
+    }
+
+    /// Install the documented `agy` `statusLine` recorder hook and sync any recorded accounts.
+    @discardableResult
+    func enableAntigravityRecorder() throws -> [ImportResult] {
+        try antigravityStore.installRecorder()
+        return syncAntigravityAccounts()
+    }
+
+    /// Reconcile every locally recorded Antigravity (`agy`) account snapshot without network calls.
+    @discardableResult
+    func syncAntigravityAccounts() -> [ImportResult] {
+        guard let file = antigravityStore.loadFile() else { return [] }
+        let sortedSnapshots = file.accounts.values.sorted {
+            $0.email.localizedCaseInsensitiveCompare($1.email) == .orderedAscending
+        }
+        let activeKey = file.activeEmail?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        var results: [ImportResult] = []
+        for snapshot in sortedSnapshots {
+            let trimmedEmail = snapshot.email.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedEmail.isEmpty else { continue }
+            let usage = UsageService.parseAntigravityQuota(snapshot)
+            let discovered = Account(
+                provider: .gemini,
+                label: GeminiCredentialStore.preferredLabel(email: trimmedEmail, name: nil),
+                email: trimmedEmail,
+                plan: usage.discoveredPlan ?? PlanTier.parse(snapshot.planTier),
+                accountID: AntigravityUsageStore.accountID(forEmail: trimmedEmail),
+                credentialSnapshot: nil,
+                usage: usage
+            )
+            let isLiveActive = trimmedEmail.lowercased() == activeKey
+            let result = reconcile(discovered, markActive: isLiveActive)
+            if let index = accounts.firstIndex(where: { $0.id == result.account.id }) {
+                accounts[index].usage = usage
+                if let plan = usage.discoveredPlan, plan != .unknown {
+                    accounts[index].plan = plan
+                }
+                refreshErrors.removeValue(forKey: result.account.id)
+            }
+            results.append(result)
+        }
+        if !results.isEmpty {
+            persist()
+        }
+        return results
+    }
+
     func discoverLiveAccounts() async {
         reconcileLiveAccount(await liveAccount(provider: .codex), provider: .codex)
+        persist()
+        let liveGemini = await liveAccount(provider: .gemini)
+        if let liveGemini {
+            reconcileLiveAccount(liveGemini, provider: .gemini)
+        }
+        let agySynced = syncAntigravityAccounts()
+        if liveGemini == nil && agySynced.isEmpty {
+            activeAccountIDs.removeValue(forKey: .gemini)
+        }
         persist()
         reconcileLiveAccount(await liveAccount(provider: .claude), provider: .claude)
         persist()
@@ -185,10 +325,12 @@ final class AccountsManager {
     private func liveAccount(provider: Provider) async -> Account? {
         let store = claudeStore
         let codexStore = self.codexStore
+        let geminiStore = self.geminiStore
         return await Task.detached(priority: .utility) {
             switch provider {
             case .codex: return Self.buildCodexAccount(store: codexStore)
             case .claude: return Self.buildClaudeAccount(store: store)
+            case .gemini: return Self.buildGeminiAccount(store: geminiStore)
             }
         }.value
     }
@@ -214,10 +356,21 @@ final class AccountsManager {
     /// - Returns: Added/updated account, or `nil` when no usable login is found.
     /// - Side effects: Creates an owner-only snapshot and marks the account active.
     func importCurrentAccount(provider: Provider) async -> ImportResult? {
-        guard let discovered = await liveAccount(provider: provider) else { return nil }
-        let result = reconcile(discovered, markActive: true)
-        persist()
-        return result
+        if let discovered = await liveAccount(provider: provider) {
+            let result = reconcile(discovered, markActive: true)
+            persist()
+            return result
+        }
+        if provider == .gemini {
+            let synced = syncAntigravityAccounts()
+            if let activeID = activeAccountIDs[.gemini],
+                let activeResult = synced.first(where: { $0.account.id == activeID })
+            {
+                return activeResult
+            }
+            return synced.first
+        }
+        return nil
     }
 
     /// Import a provider credential JSON file without replacing the live CLI login.
@@ -257,6 +410,7 @@ final class AccountsManager {
         try Task.checkCancellation()
         let claudeStore = self.claudeStore
         let codexStore = self.codexStore
+        let geminiStore = self.geminiStore
         let discovered: Account = try await Task.detached(priority: .userInitiated) {
             switch provider {
             case .codex:
@@ -293,6 +447,22 @@ final class AccountsManager {
                     throw ImportError.snapshotWriteFailed
                 }
                 return Self.makeClaudeAccount(auth: auth, accountID: accountID, snapshot: snapshot)
+            case .gemini:
+                guard let auth = try? JSONDecoder().decode(GeminiAuth.self, from: data),
+                    let token = auth.accessToken, !token.isEmpty
+                else { throw ImportError.invalidCredential }
+                guard let accountID = auth.stableAccountID else {
+                    throw ImportError.missingAccountIdentity
+                }
+                guard
+                    let snapshot = geminiStore.snapshot(
+                        data: data,
+                        accountID: accountID
+                    )
+                else {
+                    throw ImportError.snapshotWriteFailed
+                }
+                return Self.makeGeminiAccount(auth: auth, accountID: accountID, snapshot: snapshot)
             }
         }.value
 
@@ -313,6 +483,10 @@ final class AccountsManager {
     /// - Side effects: Writes the provider's live credential and updates active state.
     ///   Failure leaves the previous active marker unchanged.
     private func commitLiveCredential(for account: Account) -> Bool {
+        if AntigravityUsageStore.isAntigravityAccountID(account.accountID) {
+            lastError = appLocalized("gemini.agy.switch_notice")
+            return false
+        }
         guard let snapshot = account.credentialSnapshot else {
             lastError = "This account has no usable credential snapshot"
             return false
@@ -321,6 +495,7 @@ final class AccountsManager {
         switch account.provider {
         case .codex: activated = codexStore.activate(snapshot: snapshot)
         case .claude: activated = claudeStore.activate(snapshot: snapshot)
+        case .gemini: activated = geminiStore.activate(snapshot: snapshot)
         }
         guard activated else {
             lastError = "Failed to switch account"
@@ -366,6 +541,7 @@ final class AccountsManager {
         switch account.provider {
         case .codex: restored = codexStore.activate(snapshot: snapshot)
         case .claude: restored = claudeStore.activate(snapshot: snapshot)
+        case .gemini: restored = geminiStore.activate(snapshot: snapshot)
         }
         guard restored else {
             lastError = "The previous account credential could not be restored."
@@ -433,6 +609,33 @@ final class AccountsManager {
             label: auth.accountIdentity?.label ?? Provider.claude.displayName,
             email: auth.accountIdentity?.email,
             plan: PlanTier.parse(auth.planType),
+            accountID: accountID,
+            credentialSnapshot: snapshot
+        )
+    }
+
+    nonisolated static func buildGeminiAccount(
+        store: GeminiCredentialStore = .shared
+    ) -> Account? {
+        guard let live = store.resolveLiveAccount() else { return nil }
+        return makeGeminiAccount(
+            auth: live.auth,
+            accountID: live.accountID,
+            snapshot: live.snapshot
+        )
+    }
+
+    /// Convert validated Gemini credential metadata into the persisted account model.
+    nonisolated static func makeGeminiAccount(
+        auth: GeminiAuth,
+        accountID: String,
+        snapshot: String?
+    ) -> Account {
+        Account(
+            provider: .gemini,
+            label: GeminiCredentialStore.preferredLabel(email: auth.email, name: auth.name),
+            email: auth.email,
+            plan: .unknown,
             accountID: accountID,
             credentialSnapshot: snapshot
         )
@@ -520,6 +723,103 @@ final class AccountsManager {
         return true
     }
 
+    /// Reorder accounts within one provider section and persist the canonical ordering.
+    func moveAccounts(
+        in provider: Provider,
+        fromOffsets source: IndexSet,
+        toOffset destination: Int
+    ) {
+        let slice = accounts.filter { $0.provider == provider }
+        guard !slice.isEmpty else { return }
+        let reordered = Self.moving(slice, fromOffsets: source, toOffset: destination)
+        guard reordered.map(\.id) != slice.map(\.id) else { return }
+        replaceProviderAccounts(provider, with: reordered)
+        persist()
+    }
+
+    /// Move one account to a target insertion gap within its provider section.
+    func moveAccount(_ accountID: UUID, toIndexInProvider targetIndex: Int) {
+        guard let account = accounts.first(where: { $0.id == accountID }) else { return }
+        let slice = accounts.filter { $0.provider == account.provider }
+        guard let sourceIndex = slice.firstIndex(where: { $0.id == accountID }) else { return }
+        let clampedTarget = min(max(0, targetIndex), slice.count)
+        guard clampedTarget != sourceIndex && clampedTarget != sourceIndex + 1 else { return }
+        moveAccounts(
+            in: account.provider,
+            fromOffsets: IndexSet(integer: sourceIndex),
+            toOffset: clampedTarget
+        )
+    }
+
+    /// Reorder visible provider sections while preserving hidden providers' relative slots.
+    func moveProviders(fromOffsets source: IndexSet, toOffset destination: Int) {
+        let visible = visibleProviders
+        guard visible.count > 1 else { return }
+        let reorderedVisible = Self.moving(visible, fromOffsets: source, toOffset: destination)
+        guard reorderedVisible != visible else { return }
+
+        let currentFull = Self.normalizedProviderOrder(providerOrder)
+        let visibleSet = Set(reorderedVisible)
+        var visibleIterator = reorderedVisible.makeIterator()
+        providerOrder = currentFull.map { provider in
+            visibleSet.contains(provider) ? (visibleIterator.next() ?? provider) : provider
+        }
+        normalizeAccountsOrder()
+        persist()
+    }
+
+    /// Move one visible provider section to a target insertion gap among visible sections.
+    func moveProvider(_ provider: Provider, toVisibleIndex targetIndex: Int) {
+        let visible = visibleProviders
+        guard let sourceIndex = visible.firstIndex(of: provider) else { return }
+        let clampedTarget = min(max(0, targetIndex), visible.count)
+        guard clampedTarget != sourceIndex && clampedTarget != sourceIndex + 1 else { return }
+        moveProviders(fromOffsets: IndexSet(integer: sourceIndex), toOffset: clampedTarget)
+    }
+
+    /// Pure Foundation equivalent of `MutableCollection.move(fromOffsets:toOffset:)`.
+    private static func moving<Element>(
+        _ items: [Element],
+        fromOffsets source: IndexSet,
+        toOffset destination: Int
+    ) -> [Element] {
+        var result = items
+        let validSource = source.filter { result.indices.contains($0) }
+        guard !validSource.isEmpty else { return items }
+        let clampedDestination = min(max(0, destination), result.count)
+        let movingItems = validSource.sorted().map { result[$0] }
+        let removedBeforeDestination = validSource.filter { $0 < clampedDestination }.count
+        for index in validSource.sorted(by: >) {
+            result.remove(at: index)
+        }
+        let insertIndex = min(
+            max(0, clampedDestination - removedBeforeDestination),
+            result.count
+        )
+        result.insert(contentsOf: movingItems, at: insertIndex)
+        return result
+    }
+
+    /// Replace one provider's slice and rebuild `accounts` in canonical `providerOrder` layout.
+    private func replaceProviderAccounts(_ provider: Provider, with reordered: [Account]) {
+        let grouped = Dictionary(grouping: accounts, by: \.provider)
+        var updated: [Account] = []
+        for item in Self.normalizedProviderOrder(providerOrder) {
+            if item == provider {
+                updated.append(contentsOf: reordered)
+            } else if let list = grouped[item] {
+                updated.append(contentsOf: list)
+            }
+        }
+        accounts = updated
+    }
+
+    /// Align the flat `accounts` array with `providerOrder` while keeping within-provider order.
+    private func normalizeAccountsOrder() {
+        let grouped = Dictionary(grouping: accounts, by: \.provider)
+        accounts = Self.normalizedProviderOrder(providerOrder).flatMap { grouped[$0] ?? [] }
+    }
+
     /// Remove one inactive account and its managed snapshot.
     /// Active credentials are protected so the account cannot immediately reappear.
     @discardableResult
@@ -533,11 +833,19 @@ final class AccountsManager {
             switch account.provider {
             case .codex: removed = codexStore.removeSnapshot(snapshot)
             case .claude: removed = claudeStore.removeSnapshot(snapshot)
+            case .gemini: removed = geminiStore.removeSnapshot(snapshot)
             }
             guard removed else {
                 lastError = "The account snapshot could not be removed."
                 return false
             }
+        }
+        if account.provider == .gemini,
+            AntigravityUsageStore.isAntigravityAccountID(account.accountID),
+            let email = account.email
+                ?? AntigravityUsageStore.email(fromAccountID: account.accountID)
+        {
+            _ = antigravityStore.removeAccount(email: email)
         }
         accounts.removeAll { $0.id == account.id }
         refreshErrors.removeValue(forKey: account.id)
@@ -576,12 +884,21 @@ final class AccountsManager {
         isRefreshing = true
         defer { isRefreshing = false }
         if retryingRejectedLogins { rejectedCredentials.removeAll() }
+        _ = syncAntigravityAccounts()
 
         await withTaskGroup(of: (UUID, Usage?, Error?).self) { group in
             let fetch = fetchUsage
+            let agyStore = antigravityStore
             for account in accounts where !isRefreshBlocked(account) {
                 group.addTask {
                     do {
+                        if account.provider == .gemini,
+                            AntigravityUsageStore.isAntigravityAccountID(account.accountID)
+                        {
+                            let usage = try UsageService.fetchAntigravity(
+                                account, store: agyStore)
+                            return (account.id, usage, nil)
+                        }
                         return (account.id, try await fetch(account), nil)
                     } catch {
                         return (account.id, nil, error)
@@ -591,6 +908,9 @@ final class AccountsManager {
             for await (id, usage, error) in group {
                 if let usage, let index = accounts.firstIndex(where: { $0.id == id }) {
                     accounts[index].usage = usage
+                    if let plan = usage.discoveredPlan, plan != .unknown {
+                        accounts[index].plan = plan
+                    }
                     refreshErrors.removeValue(forKey: id)
                     rejectedCredentials.removeValue(forKey: id)
                 } else if let error {
@@ -607,6 +927,13 @@ final class AccountsManager {
         if let authError = error as? CodexAuthError {
             refreshErrors[id] = authError.displayMessage
         } else if let authError = error as? ClaudeAuthError {
+            refreshErrors[id] = authError.displayMessage
+            if case .loginRequired = authError,
+                let account = accounts.first(where: { $0.id == id })
+            {
+                rejectedCredentials[id] = credentialGeneration(of: account)
+            }
+        } else if let authError = error as? GeminiAuthError {
             refreshErrors[id] = authError.displayMessage
             if case .loginRequired = authError,
                 let account = accounts.first(where: { $0.id == id })
@@ -638,7 +965,17 @@ final class AccountsManager {
     /// Unreadable storage collapses to one sentinel rather than a missing value,
     /// so a rejection can never be latched under a key that silently disappears.
     private func credentialGeneration(of account: Account) -> String {
-        claudeStore.snapshotFingerprint(account.credentialSnapshot) ?? "unavailable"
+        switch account.provider {
+        case .claude:
+            return claudeStore.snapshotFingerprint(account.credentialSnapshot) ?? "unavailable"
+        case .gemini:
+            return geminiStore.snapshotFingerprint(account.credentialSnapshot) ?? "unavailable"
+        case .codex:
+            guard let filename = account.credentialSnapshot,
+                let auth = codexStore.loadSnapshot(filename)
+            else { return "unavailable" }
+            return CodexCredentialStore.fingerprint(auth)
+        }
     }
 
     /// Consume one confirmed Codex reset credit and reconcile the provider snapshot.
@@ -694,7 +1031,8 @@ final class AccountsManager {
             activeID: activeAccountID,
             activeIDs: Dictionary(
                 uniqueKeysWithValues: activeAccountIDs.map { ($0.key.rawValue, $0.value) }
-            )
+            ),
+            providerOrder: Self.normalizedProviderOrder(providerOrder).map(\.rawValue)
         )
         do {
             let data = try JSONEncoder().encode(snapshot)
@@ -717,6 +1055,9 @@ final class AccountsManager {
     /// single `activeID` stored by previous versions.
     private func apply(_ snapshot: PersistedSnapshot) {
         accounts = snapshot.accounts
+        providerOrder = Self.normalizedProviderOrder(
+            snapshot.providerOrder?.compactMap(Provider.init(rawValue:))
+        )
         activeAccountIDs = Dictionary(
             uniqueKeysWithValues: (snapshot.activeIDs ?? [:]).compactMap { key, value in
                 guard let provider = Provider(rawValue: key),
@@ -732,6 +1073,7 @@ final class AccountsManager {
             activeAccountIDs[legacyAccount.provider] = legacyID
         }
         repairStoredCodexMetadata()
+        repairStoredGeminiMetadata()
     }
 
     /// Rebuild automatically generated Codex labels and plan metadata from every
@@ -748,12 +1090,29 @@ final class AccountsManager {
         }
     }
 
+    /// Rebuild automatically generated Gemini labels from saved snapshots when identity exists.
+    private func repairStoredGeminiMetadata() {
+        for index in accounts.indices where accounts[index].provider == .gemini {
+            guard let snapshot = accounts[index].credentialSnapshot,
+                let auth = geminiStore.loadSnapshot(snapshot)
+            else { continue }
+            let label = GeminiCredentialStore.preferredLabel(email: auth.email, name: auth.name)
+            if label != Provider.gemini.displayName
+                || accounts[index].label == Provider.gemini.displayName
+            {
+                accounts[index].label = label
+            }
+            accounts[index].email = auth.email ?? accounts[index].email
+        }
+    }
+
 }
 
 /// Version-tolerant persisted state. `activeID` remains readable for migration;
-/// new builds store the provider-keyed `activeIDs` map.
+/// new builds store the provider-keyed `activeIDs` map and `providerOrder`.
 private struct PersistedSnapshot: Codable {
     var accounts: [Account]
     var activeID: UUID?
     var activeIDs: [String: UUID]?
+    var providerOrder: [String]?
 }

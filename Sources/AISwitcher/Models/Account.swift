@@ -4,6 +4,7 @@ import Foundation
 enum Provider: String, Codable, CaseIterable, Identifiable {
     case codex  // OpenAI Codex / ChatGPT
     case claude  // Anthropic Claude / Claude Code
+    case gemini  // Google Gemini CLI
 
     var id: String { rawValue }
 
@@ -11,6 +12,7 @@ enum Provider: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .codex: return "Codex"
         case .claude: return "Claude"
+        case .gemini: return "Gemini"
         }
     }
 
@@ -19,6 +21,7 @@ enum Provider: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .codex: return "gamecontroller.fill"
         case .claude: return "sparkles"
+        case .gemini: return "sparkle"
         }
     }
 
@@ -27,6 +30,7 @@ enum Provider: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .codex: return "codex"
         case .claude: return "claude"
+        case .gemini: return "gemini"
         }
     }
 
@@ -35,6 +39,7 @@ enum Provider: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .codex: return ["login"]
         case .claude: return ["auth", "login"]
+        case .gemini: return []
         }
     }
 
@@ -47,9 +52,11 @@ enum Provider: String, Codable, CaseIterable, Identifiable {
 /// A subscription plan tier as reported by the provider.
 enum PlanTier: String, Codable {
     case free
+    case standard
     case plus
     case pro
     case max
+    case ultra
     case team
     case enterprise
     case unknown
@@ -58,9 +65,11 @@ enum PlanTier: String, Codable {
     var displayName: String {
         switch self {
         case .free: return "Free"
+        case .standard: return "Standard"
         case .plus: return "Plus"
         case .pro: return "Pro"
         case .max: return "Max"
+        case .ultra: return "Ultra"
         case .team: return "Team"
         case .enterprise: return "Enterprise"
         case .unknown: return "—"
@@ -69,12 +78,14 @@ enum PlanTier: String, Codable {
 
     static func parse(_ raw: String?) -> PlanTier {
         guard let raw = raw?.lowercased() else { return .unknown }
+        if raw.contains("ultra") { return .ultra }
         if raw.contains("pro") { return .pro }
         if raw.contains("plus") { return .plus }
         if raw.contains("max") { return .max }
         if raw.contains("team") { return .team }
         if raw.contains("enterprise") || raw.contains("business") { return .enterprise }
-        if raw.contains("free") { return .free }
+        if raw.contains("standard") { return .standard }
+        if raw.contains("free") || raw.contains("legacy") { return .free }
         return .unknown
     }
 }
@@ -146,7 +157,9 @@ struct ResetCredit: Identifiable, Codable, Equatable {
     var expiresAt: Date?
 }
 
-/// Usage snapshot for both the 5h and 7d windows plus reset-credit info.
+/// Usage snapshot for two provider quota windows plus reset-credit info.
+/// Codex/Claude map `fiveHour` and `sevenDay` to 5h/7d windows; Gemini maps
+/// them to its Pro and Flash daily model quota buckets.
 struct Usage: Codable, Equatable {
     var fiveHour: UsageWindow
     var sevenDay: UsageWindow
@@ -155,6 +168,8 @@ struct Usage: Codable, Equatable {
     var fetchedAt: Date?
     /// Available credit metadata. `nil` means the provider did not return details.
     var resetCredits: [ResetCredit]? = nil
+    /// Plan tier reported dynamically by usage endpoints (e.g. Gemini `loadCodeAssist`).
+    var discoveredPlan: PlanTier? = nil
 
     static let empty = Usage(
         fiveHour: .unknown,

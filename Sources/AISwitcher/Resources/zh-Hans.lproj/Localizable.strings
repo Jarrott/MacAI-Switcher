@@ -15,6 +15,8 @@
 /* 账号卡片 */
 "card.window.5h" = "5小时";
 "card.window.7d" = "7天";
+"card.window.gemini_pro" = "Pro";
+"card.window.gemini_flash" = "Flash";
 "card.percent.unknown" = "--%%";
 "card.reset.unknown" = "--";
 "card.resets_available" = "剩余 %d 次重置";
@@ -57,6 +59,12 @@
 "add_account.browser_waiting" = "请在浏览器中完成登录…";
 "add_account.browser_no_credential" = "登录流程已结束，但未检测到可用的 CLI 凭据。";
 "add_account.browser_cli_missing" = "未安装或无法找到所选服务商的 CLI。";
+"add_account.browser_cli_missing.gemini" = "尚未安装 gemini CLI。请先在终端执行 `npm install -g @google/gemini-cli`（或 `brew install gemini-cli`），然后重试。";
+"add_account.agy_instructions" = "已检测到 Antigravity CLI（agy）。点击下方启用自动记录后，在 agy 中对话或输入 /usage，即可自动记录并同步你的 Gemini 剩余额度与重置时间。";
+"add_account.agy_enable" = "启用 Antigravity (agy) 用量记录";
+"add_account.agy_sync" = "立即同步 Antigravity (agy) 用量";
+"add_account.agy_enabled_waiting" = "已启用 Antigravity (agy) 用量记录。重新启动 agy（或在当前 agy 会话中输入 /statusline）并发送消息或执行 /usage 后，此处与菜单栏将自动同步最新 Gemini 额度。";
+"add_account.agy_install_failed" = "无法写入 Antigravity (agy) 的 statusLine 配置，请检查 ~/.gemini/antigravity-cli/settings.json 权限。";
 "add_account.browser_launch_failed" = "无法启动浏览器登录流程。";
 "add_account.browser_runtime_missing" = "无法找到服务商 CLI 所需的运行环境，请检查 Node 安装。";
 "add_account.browser_staging_failed" = "无法创建受保护的临时登录空间。";
@@ -103,6 +111,7 @@
 /* 服务商 */
 "provider.codex" = "Codex";
 "provider.claude" = "Claude";
+"provider.gemini" = "Gemini";
 "claude.auth.missing" = "Claude 凭证快照不可用，请导入当前登录。";
 "claude.auth.login_required" = "Claude 登录续期失败，请导入当前登录或重新登录。";
 "claude.auth.network" = "无法连接 Claude 认证服务，请稍后刷新。";
@@ -119,3 +128,21 @@
 "codex.auth.invalid_response" = "Codex 返回的令牌刷新数据无效。";
 "codex.auth.persistence" = "无法保存 Codex 凭证，请检查文件权限。";
 "codex.auth.changed" = "Codex 凭证在刷新期间发生变化，请再次刷新。";
+
+/* Gemini authentication recovery */
+"gemini.auth.missing" = "Gemini 凭证不可用，请在“添加账号”中导入当前登录。";
+"gemini.auth.login_required" = "Gemini 登录已失效，请在“添加账号”中重新授权，无需删除账号。";
+"gemini.auth.client_unavailable" = "Gemini 令牌已过期且未找到 CLI OAuth 客户端配置，请重新使用 gemini CLI 登录。";
+"gemini.auth.network" = "无法连接 Google 认证服务，请稍后刷新。";
+"gemini.auth.refresh_http" = "Gemini 令牌刷新失败（HTTP %d），请稍后重试。";
+"gemini.auth.invalid_response" = "Gemini 返回的令牌刷新数据无效。";
+"gemini.auth.persistence" = "无法保存 Gemini 凭证，请检查文件权限。";
+"gemini.auth.changed" = "Gemini 凭证在刷新期间发生变化，请再次刷新。";
+"gemini.agy.switch_notice" = "Antigravity (agy) 由系统钥匙串自行管理登录。请在 agy 中运行 /logout 切换 Google 账号，AI Switcher 会自动记录各账号用量。";
+
+/* 拖拽排序 */
+"reorder.hint" = "可拖拽账号行或服务商分组调整显示顺序。";
+"reorder.account_help" = "拖拽调整此账号顺序";
+"reorder.section_help" = "拖拽调整此服务商分组顺序";
+"reorder.move_up" = "上移分组";
+"reorder.move_down" = "下移分组";

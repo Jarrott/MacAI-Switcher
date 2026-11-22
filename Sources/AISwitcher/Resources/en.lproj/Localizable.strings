@@ -15,6 +15,8 @@
 /* Account card */
 "card.window.5h" = "5h";
 "card.window.7d" = "7d";
+"card.window.gemini_pro" = "Pro";
+"card.window.gemini_flash" = "Flash";
 "card.percent.unknown" = "--%%";
 "card.reset.unknown" = "--";
 "card.resets_available" = "%d resets available";
@@ -57,6 +59,12 @@
 "add_account.browser_waiting" = "Complete sign-in in your browser…";
 "add_account.browser_no_credential" = "Sign-in finished, but no usable CLI credential was found.";
 "add_account.browser_cli_missing" = "The selected provider CLI is not installed or could not be found.";
+"add_account.browser_cli_missing.gemini" = "The gemini CLI is not installed. Run `npm install -g @google/gemini-cli` (or `brew install gemini-cli`), then try again.";
+"add_account.agy_instructions" = "Antigravity CLI (agy) is installed. Enable automatic usage recording below, then run a turn or `/usage` in agy to sync your Gemini quota and reset time.";
+"add_account.agy_enable" = "Enable Antigravity (agy) Usage Recording";
+"add_account.agy_sync" = "Sync Antigravity (agy) Usage Now";
+"add_account.agy_enabled_waiting" = "Antigravity (agy) recording is enabled. Reopen agy (or run `/statusline` inside an open session) and send a prompt or run `/usage` to capture your Gemini quota.";
+"add_account.agy_install_failed" = "Could not configure the Antigravity (agy) statusLine recorder. Check permissions for ~/.gemini/antigravity-cli/settings.json.";
 "add_account.browser_launch_failed" = "The browser sign-in process could not be started.";
 "add_account.browser_runtime_missing" = "The provider CLI runtime could not be found. Check your Node installation.";
 "add_account.browser_staging_failed" = "A protected temporary sign-in workspace could not be created.";
@@ -103,6 +111,7 @@
 /* Providers */
 "provider.codex" = "Codex";
 "provider.claude" = "Claude";
+"provider.gemini" = "Gemini";
 "claude.auth.missing" = "Claude credential snapshot is unavailable. Import the current login.";
 "claude.auth.login_required" = "Claude login could not be renewed. Import the current login or sign in again.";
 "claude.auth.network" = "Claude authentication service could not be reached. Try refreshing later.";
@@ -119,3 +128,21 @@
 "codex.auth.invalid_response" = "Codex returned an invalid token refresh response.";
 "codex.auth.persistence" = "Could not save Codex credentials. Check file permissions.";
 "codex.auth.changed" = "Codex credentials changed during refresh. Refresh again.";
+
+/* Gemini authentication recovery */
+"gemini.auth.missing" = "Gemini login unavailable. Add Account → Import Current Login.";
+"gemini.auth.login_required" = "Gemini sign-in expired. Add Account → sign in again; no removal needed.";
+"gemini.auth.client_unavailable" = "Gemini token expired and the CLI OAuth client was not found. Sign in again with gemini CLI.";
+"gemini.auth.network" = "Cannot reach Google authentication. Try refreshing later.";
+"gemini.auth.refresh_http" = "Gemini token refresh failed (HTTP %d). Try again later.";
+"gemini.auth.invalid_response" = "Gemini returned an invalid token refresh response.";
+"gemini.auth.persistence" = "Could not save Gemini credentials. Check file permissions.";
+"gemini.auth.changed" = "Gemini credentials changed during refresh. Refresh again.";
+"gemini.agy.switch_notice" = "Antigravity (agy) manages sign-in in its own keyring. Run /logout in agy to switch Google accounts; AI Switcher records each account automatically.";
+
+/* Drag-and-drop reordering */
+"reorder.hint" = "Drag account rows or provider sections to change display order.";
+"reorder.account_help" = "Drag to reorder this account";
+"reorder.section_help" = "Drag to reorder this provider section";
+"reorder.move_up" = "Move section up";
+"reorder.move_down" = "Move section down";

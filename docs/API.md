@@ -187,6 +187,63 @@ credentials are never displayed or logged. A failed refresh retains prior usage.
 Regression tests inject synthetic HTTP responses and isolated credential directories;
 no live account, Keychain item or provider request is used by the tests.
 
+## Gemini
+
+### Tier and project discovery
+
+`POST https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist`
+
+Request JSON includes `metadata` (`ideType`, `platform`, `pluginType: "GEMINI"`).
+When returned, `cloudaicompanionProject` (string or object `{ "id": "..." }`) is
+passed to `retrieveUserQuota`, and `paidTier` / `currentTier` identifiers
+(`free-tier`, `legacy-tier`, `standard-tier`, `g1-pro-tier`, `g1-ultra-tier`)
+resolve the account's plan badge without fabricating values when omitted.
+
+### Usage quota buckets
+
+`POST https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota`
+
+Request JSON sends `{ "project": "<cloudaicompanionProject>" }` when known, or `{}`
+otherwise. Each `buckets` entry supplies `modelId`, `remainingFraction` (0...1),
+and an optional ISO-8601 `resetTime`. Models containing `pro` map to the Pro row
+and models containing `flash` map to the Flash row; when multiple buckets match a
+family, the lowest `remainingFraction` (breaking ties by earliest `resetTime`) is
+selected so exhaustion is never hidden. Missing or non-numeric values remain unknown.
+
+### Token refresh
+
+`POST https://oauth2.googleapis.com/token` (`application/x-www-form-urlencoded`)
+
+Refreshes an expired `~/.gemini/oauth_creds.json` access token using `grant_type`,
+`refresh_token`, `client_id`, and `client_secret`. No OAuth client secret is stored
+in this repository; client credentials are resolved dynamically from the credential
+file if present, optional `GEMINI_OAUTH_CLIENT_ID` / `GEMINI_OAUTH_CLIENT_SECRET`
+environment variables, or the locally installed `gemini` CLI's `oauth2.js`.
+
+`GeminiAuthCoordinator` coalesces concurrent renewals per account, adopts matching
+live CLI rotations before requesting OAuth, allows at most one refresh and one 401
+retry, never refreshes on 403/429, latches definitively rejected refresh tokens until
+the credential changes, and persists rotated credentials atomically (`0600`) while
+preserving unknown fields and stripping snapshot-only `aiSwitcher*` metadata from
+live writes.
+
+### Antigravity CLI (`agy`) statusLine integration
+
+Antigravity CLI (`agy`) stores its OAuth session inside the operating system's
+keyring and exposes live `email`, `plan_tier`, and `quota` metrics through its
+documented `statusLine` command contract in `~/.gemini/antigravity-cli/settings.json`.
+When enabled from **Add Account → Gemini**, AI Switcher installs an owner-only
+recorder script (`agy-statusline-hook.sh`) with `stack_with_default: true` (chaining
+any pre-existing custom `statusLine.command`) that writes only `email`, `plan_tier`,
+`quota` (`remaining_fraction`, `remaining_amount`, `reset_time`, `reset_in_seconds`,
+`disabled`), and `recorded_at` atomically (`0600`) to `antigravity-usage.json`. No
+credentials, tokens, workspace paths, or conversation contents are recorded.
+
+`UsageService.parseAntigravityQuota` prefers Gemini-named buckets (excluding Claude
+and GPT buckets), ignores `disabled: true` entries, classifies 5-hour vs 7-day
+windows by key name or reset horizon, and picks the most constrained bucket per
+window while keeping absent values unknown.
+
 ## Local runtime persistence
 
 Runtime does not call a provider or expose a new HTTP endpoint. `AppRuntime` reads

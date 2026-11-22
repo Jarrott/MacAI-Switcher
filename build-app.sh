@@ -6,11 +6,12 @@ cd "$(dirname "$0")"
 CONFIG="${1:-release}"
 APP_NAME="AI Switcher"
 BUNDLE_ID="com.aiswitcher.app"
-BUILD_DIR=".build/$CONFIG"
-APP="$BUILD_DIR/$APP_NAME.app"
 
 echo "==> swift build ($CONFIG)"
 swift build -c "$CONFIG"
+
+BUILD_DIR="$(swift build -c "$CONFIG" --show-bin-path)"
+APP="$BUILD_DIR/$APP_NAME.app"
 
 echo "==> assembling $APP"
 rm -rf "$APP"

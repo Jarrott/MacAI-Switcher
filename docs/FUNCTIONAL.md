@@ -2,13 +2,17 @@
 
 ## Menu bar
 
-The app presents a compact translucent menu. Accounts are grouped in stable
-OpenAI/Codex and Anthropic/Claude sections even if discovery returns a different
-order. Each section uses official compact provider artwork, a distinct cool or
-warm low-opacity accent, and a bordered glass surface. Each account row shows
-its plan as a compact accent badge, remaining 5-hour quota, remaining 7-day quota,
-reset dates, manual reset-credit availability, active state, loading state, and
-the most recent refresh error when applicable.
+The app presents a compact translucent menu. Accounts are grouped in branded
+OpenAI/Codex, Anthropic/Claude, and Google/Gemini sections. Each section uses
+official compact provider artwork, a distinct low-opacity accent, and a bordered
+glass surface. Users can drag provider section headers to reorder sections and
+drag account cards (via their trailing drag handle or display-only usage rows)
+to reorder accounts within each section; order persists in `accounts.json` and
+synchronizes across the menu dropdown, hover account submenu, and Account Settings.
+Each account row shows its plan as a compact accent badge, remaining 5-hour/7-day
+quota (or Pro/Flash daily quota for Gemini), reset dates, manual reset-credit
+availability (for Codex), active state, loading state, and the most recent
+refresh error when applicable.
 
 The menu header shows accumulated application runtime ("Total runtime" / "累计运行")
 across launches. It restores the saved SQLite total, adds the current process's
@@ -34,9 +38,9 @@ The status item uses a monochrome vector switch glyph at an 18-point logical
 size. AppKit rasterizes the SVG at the current display scale and applies native
 template tinting, avoiding bitmap enlargement on Retina screens.
 
-Codex and Claude are separate CLI providers. One account can be active for each
-provider at the same time. Selecting an account replaces only that provider's
-live credential.
+Codex, Claude, and Gemini are separate CLI providers. One account can be active
+for each provider at the same time. Selecting an account replaces only that
+provider's live credential.
 
 Available menu actions are:
 
@@ -52,6 +56,14 @@ configured. Placeholder actions must not be presented as working features.
 ## Account discovery and switching
 
 - Codex reads `~/.codex/auth.json`.
+- Gemini supports both **Antigravity CLI (`agy`)** usage recording (via its
+  documented `statusLine` hook in `~/.gemini/antigravity-cli/settings.json`,
+  recording per-account `email`, `plan_tier`, and 5-hour/7-day Gemini quota into
+  `antigravity-usage.json` without touching the keyring) and **Gemini CLI** OAuth
+  (`~/.gemini/oauth_creds.json` + `~/.gemini/google_accounts.json`). Activating a
+  Gemini CLI snapshot backs up the live credential, writes stripped `oauth_creds.json`
+  (`0600`), and updates `google_accounts.json` best-effort; `agy` accounts manage
+  login switching via `/logout` in `agy`.
 - Claude reads the `Claude Code-credentials` Keychain item, with
   `~/.claude/.credentials.json` as fallback. If several items share that service,
   the one holding a `claudeAiOauth` login is used (current user's account first,
@@ -180,6 +192,10 @@ isolated temporary thread; Tab accepts text and Enter never implicitly accepts i
   without overwriting the custom name.
 - Inactive accounts can be activated from the list. Activation replaces only the
   selected provider's live credential.
+- Accounts are grouped into draggable provider sections in Account Settings. Users
+  can drag account rows within each section, drag provider section headers, or use
+  keyboard-accessible up/down section buttons to reorder sections. Reordering
+  persists immediately to `accounts.json` and updates the menu bar and submenu.
 - Inactive accounts can be removed after confirmation. The active account is
   protected from deletion, and successful removal also deletes its managed
   credential snapshot.

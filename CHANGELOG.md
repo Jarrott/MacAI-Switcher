@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Added
+
+- Add Antigravity CLI (`agy`) Gemini usage recording via its documented
+  `statusLine` hook in `~/.gemini/antigravity-cli/settings.json` (one-click
+  setup from Add Account → Gemini, preserving existing settings and built-in
+  status line, recording only sanitized `email`, `plan_tier`, and 5h/7d Gemini
+  quota per account with `0600` permissions).
+- Add Gemini CLI OAuth provider support: discover, import, snapshot (`0600`),
+  activate, and refresh `~/.gemini/oauth_creds.json` accounts (syncing active
+  email with `~/.gemini/google_accounts.json` and isolating browser OAuth via
+  `GEMINI_CLI_HOME`).
+- Fetch Gemini Pro and Flash daily model quota buckets and plan tiers via
+  `cloudcode-pa.googleapis.com` (`v1internal:loadCodeAssist` and
+  `v1internal:retrieveUserQuota`), with coalesced token refresh resolved from
+  local CLI OAuth configuration and synthetic parser/auth regression tests.
+- Add persistent drag-and-drop reordering for all accounts (within each provider
+  section) and provider sections in both the menu-bar dropdown and Account
+  Settings window (with keyboard-accessible section move controls), synced across
+  the hover account submenu and persisted in `accounts.json`.
+
 ### Fixed
 
 - Recover Codex usage from stale credential snapshots by adopting matching live CLI

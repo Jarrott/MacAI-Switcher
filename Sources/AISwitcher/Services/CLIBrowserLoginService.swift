@@ -133,7 +133,7 @@ enum CLIBrowserLoginService {
                 let process = Process()
                 let errorPipe = Pipe()
                 process.executableURL = executableURL
-                process.arguments = provider.cliLoginArguments
+                process.arguments = browserLoginArguments(for: provider)
                 var environment = processEnvironment(
                     executableURL: executableURL,
                     inherited: ProcessInfo.processInfo.environment
@@ -142,6 +142,10 @@ enum CLIBrowserLoginService {
                     let variable = isolatedHomeEnvironmentVariable(for: provider)
                 {
                     environment[variable] = isolatedHome.path
+                    if provider == .gemini {
+                        // Keep isolated login credentials in the staged oauth_creds.json file.
+                        environment["GEMINI_FORCE_FILE_STORAGE"] = "true"
+                    }
                 }
                 process.environment = environment
                 process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
@@ -171,6 +175,13 @@ enum CLIBrowserLoginService {
         }
 
         try Task.checkCancellation()
+        if provider == .gemini,
+            let isolatedHome,
+            let staged = readStagedCredential(for: provider, in: isolatedHome)
+        {
+            return .stagedCredential(staged)
+        }
+
         guard result.status == 0 else {
             let diagnostic = result.standardError.lowercased()
             if diagnostic.contains("node")
@@ -181,23 +192,75 @@ enum CLIBrowserLoginService {
             throw LoginError.unsuccessfulExit(result.status)
         }
 
-        guard let isolatedHome else { return .liveCredential }
-        let credentialURL = isolatedHome.appendingPathComponent("auth.json")
-        guard let data = try? Data(contentsOf: credentialURL), !data.isEmpty else {
-            throw LoginError.credentialNotCreated
+        if let isolatedHome {
+            guard let staged = readStagedCredential(for: provider, in: isolatedHome) else {
+                throw LoginError.credentialNotCreated
+            }
+            return .stagedCredential(staged)
         }
-        return .stagedCredential(data)
+        return .liveCredential
+    }
+
+    /// Arguments passed when launching a provider CLI headlessly for browser OAuth.
+    private static func browserLoginArguments(for provider: Provider) -> [String] {
+        switch provider {
+        case .codex: return provider.cliLoginArguments
+        case .claude: return provider.cliLoginArguments
+        // Non-interactive empty prompt triggers personal Google OAuth and exits once saved.
+        case .gemini: return ["-p", ""]
+        }
     }
 
     /// Environment variable used to isolate a provider's browser-login credential.
     ///
     /// - Parameter provider: Provider whose CLI will be launched.
-    /// - Returns: `CODEX_HOME` for Codex; `nil` while Claude continues to use its
-    ///   Keychain-backed live login and rollback protection.
+    /// - Returns: `CODEX_HOME` for Codex, `GEMINI_CLI_HOME` for Gemini, and `nil`
+    ///   while Claude continues to use its Keychain-backed live login with rollback.
     static func isolatedHomeEnvironmentVariable(for provider: Provider) -> String? {
         switch provider {
         case .codex: return "CODEX_HOME"
         case .claude: return nil
+        case .gemini: return "GEMINI_CLI_HOME"
+        }
+    }
+
+    /// Read and validate staged credential bytes produced inside an isolated home.
+    private static func readStagedCredential(for provider: Provider, in isolatedHome: URL) -> Data?
+    {
+        switch provider {
+        case .codex:
+            let credentialURL = isolatedHome.appendingPathComponent("auth.json")
+            guard let data = try? Data(contentsOf: credentialURL), !data.isEmpty else {
+                return nil
+            }
+            return data
+        case .gemini:
+            let geminiDir = isolatedHome.appendingPathComponent(".gemini", isDirectory: true)
+            let credentialURL = geminiDir.appendingPathComponent("oauth_creds.json")
+            guard let data = try? Data(contentsOf: credentialURL),
+                !data.isEmpty,
+                let auth = try? JSONDecoder().decode(GeminiAuth.self, from: data),
+                let token = auth.accessToken, !token.isEmpty
+            else { return nil }
+            // Preserve active email from isolated google_accounts.json if id_token omitted it.
+            let accountsURL = geminiDir.appendingPathComponent("google_accounts.json")
+            if auth.email == nil,
+                let accountsData = try? Data(contentsOf: accountsURL),
+                let accountsObj = try? JSONSerialization.jsonObject(with: accountsData)
+                    as? [String: Any],
+                let email = accountsObj["active"] as? String, !email.isEmpty,
+                var credObj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            {
+                credObj["aiSwitcherAccountEmail"] = email
+                if let merged = try? JSONSerialization.data(
+                    withJSONObject: credObj, options: [.sortedKeys])
+                {
+                    return merged
+                }
+            }
+            return data
+        case .claude:
+            return nil
         }
     }
 
@@ -222,6 +285,22 @@ enum CLIBrowserLoginService {
                 [.posixPermissions: 0o700],
                 ofItemAtPath: directory.path
             )
+            if provider == .gemini {
+                let geminiDir = directory.appendingPathComponent(".gemini", isDirectory: true)
+                try fileManager.createDirectory(
+                    at: geminiDir,
+                    withIntermediateDirectories: true,
+                    attributes: [.posixPermissions: 0o700]
+                )
+                let settings = Data(
+                    #"{"selectedAuthType":"oauth-personal","security":{"auth":{"selectedType":"oauth-personal"}}}"#
+                        .utf8
+                )
+                try SecureFileWriter.write(
+                    settings,
+                    to: geminiDir.appendingPathComponent("settings.json")
+                )
+            }
             return directory
         } catch {
             try? fileManager.removeItem(at: directory)
@@ -274,10 +353,31 @@ enum CLIBrowserLoginService {
         var directories = (ProcessInfo.processInfo.environment["PATH"] ?? "")
             .split(separator: ":")
             .map(String.init)
-        directories.append(contentsOf: ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"])
+        directories.append(
+            contentsOf: [
+                "/opt/homebrew/bin",
+                "/opt/homebrew/sbin",
+                "/usr/local/bin",
+                "/usr/local/sbin",
+                "/usr/bin",
+            ]
+        )
 
         let home = fileManager.homeDirectoryForCurrentUser
-        directories.append(home.appendingPathComponent(".local/bin").path)
+        directories.append(
+            contentsOf: [
+                home.appendingPathComponent(".local/bin").path,
+                home.appendingPathComponent("bin").path,
+                home.appendingPathComponent("Library/pnpm").path,
+                home.appendingPathComponent(".npm-global/bin").path,
+                home.appendingPathComponent(".yarn/bin").path,
+                home.appendingPathComponent(".bun/bin").path,
+                home.appendingPathComponent(".volta/bin").path,
+                home.appendingPathComponent(".asdf/shims").path,
+                home.appendingPathComponent(".fnm/aliases/default/bin").path,
+                home.appendingPathComponent(".local/share/mise/shims").path,
+            ]
+        )
 
         let nvmRoot = home.appendingPathComponent(".nvm/versions/node", isDirectory: true)
         if let versions = try? fileManager.contentsOfDirectory(

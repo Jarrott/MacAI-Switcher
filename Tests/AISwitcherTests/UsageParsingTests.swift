@@ -54,6 +54,98 @@ final class UsageParsingTests: XCTestCase {
         XCTAssertNotNil(usage.sevenDay.resetsAt)
     }
 
+    /// Gemini `retrieveUserQuota` buckets map to Pro/Flash windows using the most constrained bucket.
+    func testGeminiQuotaBucketsPickMostConstrainedPerModelFamily() throws {
+        let payload: [String: Any] = [
+            "buckets": [
+                [
+                    "modelId": "gemini-2.5-pro",
+                    "remainingFraction": 0.72,
+                    "resetTime": "2026-08-09T12:00:00Z",
+                    "tokenType": "REQUESTS",
+                ],
+                [
+                    "modelId": "gemini-3-pro-preview",
+                    "remainingFraction": 0.45,
+                    "resetTime": "2026-08-09T10:00:00Z",
+                    "tokenType": "REQUESTS",
+                ],
+                [
+                    "modelId": "gemini-2.5-flash",
+                    "remainingFraction": 0.91,
+                    "resetTime": "2026-08-09T15:00:00Z",
+                    "tokenType": "REQUESTS",
+                ],
+                [
+                    "modelId": "gemini-2.5-flash-lite",
+                    "remainingFraction": 0.85,
+                    "resetTime": "2026-08-09T11:00:00Z",
+                    "tokenType": "REQUESTS",
+                ],
+            ]
+        ]
+
+        let usage = UsageService.parseGemini(payload, discoveredPlan: .pro)
+
+        XCTAssertEqual(try XCTUnwrap(usage.fiveHour.remainingFraction), 0.45, accuracy: 0.000_1)
+        XCTAssertEqual(try XCTUnwrap(usage.sevenDay.remainingFraction), 0.85, accuracy: 0.000_1)
+        XCTAssertEqual(
+            usage.fiveHour.resetsAt,
+            ISO8601DateFormatter.parse("2026-08-09T10:00:00Z")
+        )
+        XCTAssertEqual(
+            usage.sevenDay.resetsAt,
+            ISO8601DateFormatter.parse("2026-08-09T11:00:00Z")
+        )
+        XCTAssertEqual(usage.discoveredPlan, .pro)
+        XCTAssertNil(usage.resetsAvailable)
+    }
+
+    /// Missing or non-numeric Gemini buckets stay unknown and never fabricate zero.
+    func testGeminiQuotaMissingOrInvalidFieldsRemainUnknown() {
+        let empty = UsageService.parseGemini(["buckets": []])
+        XCTAssertNil(empty.fiveHour.usedFraction)
+        XCTAssertNil(empty.sevenDay.usedFraction)
+        XCTAssertEqual(empty.fiveHour.remainingPercentText, "--%")
+
+        let invalid = UsageService.parseGemini([
+            "buckets": [
+                ["modelId": "gemini-2.5-pro", "remainingFraction": true],
+                ["modelId": "gemini-2.5-flash", "remainingFraction": "not-a-number"],
+            ]
+        ])
+        XCTAssertNil(invalid.fiveHour.usedFraction)
+        XCTAssertNil(invalid.sevenDay.usedFraction)
+    }
+
+    /// Gemini `loadCodeAssist` extracts both string/object projects and subscription tiers.
+    func testGeminiCodeAssistParsesProjectAndTier() {
+        let pro = UsageService.parseGeminiCodeAssist([
+            "cloudaicompanionProject": "proj-123",
+            "paidTier": ["id": "g1-pro-tier", "name": "Google AI Pro"],
+            "currentTier": ["id": "free-tier"],
+        ])
+        XCTAssertEqual(pro.projectID, "proj-123")
+        XCTAssertEqual(pro.plan, .pro)
+
+        let ultra = UsageService.parseGeminiCodeAssist([
+            "cloudaicompanionProject": ["id": "proj-ultra"],
+            "currentTier": ["id": "g1-ultra-tier"],
+        ])
+        XCTAssertEqual(ultra.projectID, "proj-ultra")
+        XCTAssertEqual(ultra.plan, .ultra)
+
+        let standard = UsageService.parseGeminiCodeAssist([
+            "currentTier": ["id": "standard-tier"]
+        ])
+        XCTAssertNil(standard.projectID)
+        XCTAssertEqual(standard.plan, .standard)
+
+        let unknown = UsageService.parseGeminiCodeAssist([:])
+        XCTAssertNil(unknown.projectID)
+        XCTAssertEqual(unknown.plan, .unknown)
+    }
+
     /// The UI reports remaining capacity while provider payloads report consumed capacity.
     func testUsageWindowDisplaysRemainingPercentage() {
         XCTAssertEqual(UsageWindow(usedFraction: 0.93, resetsAt: nil).remainingPercentText, "7%")
@@ -110,6 +202,9 @@ final class UsageParsingTests: XCTestCase {
         XCTAssertEqual(Provider.claude.cliExecutableName, "claude")
         XCTAssertEqual(Provider.claude.cliLoginArguments, ["auth", "login"])
         XCTAssertEqual(Provider.claude.loginCommand, "claude auth login")
+        XCTAssertEqual(Provider.gemini.cliExecutableName, "gemini")
+        XCTAssertEqual(Provider.gemini.cliLoginArguments, [])
+        XCTAssertEqual(Provider.gemini.loginCommand, "gemini")
     }
 
     /// GUI launches must expose the CLI's adjacent runtime before the minimal system PATH.
@@ -127,11 +222,15 @@ final class UsageParsingTests: XCTestCase {
         XCTAssertEqual(environment["LANG"], "en_US.UTF-8")
     }
 
-    /// Codex OAuth must use a private home so cancellation cannot clear the live login.
-    func testBrowserLoginIsolationIsEnabledForCodexOnly() {
+    /// Codex and Gemini OAuth use private temporary homes so cancellation cannot clear live logins.
+    func testBrowserLoginIsolationIsEnabledForCodexAndGemini() {
         XCTAssertEqual(
             CLIBrowserLoginService.isolatedHomeEnvironmentVariable(for: .codex),
             "CODEX_HOME"
+        )
+        XCTAssertEqual(
+            CLIBrowserLoginService.isolatedHomeEnvironmentVariable(for: .gemini),
+            "GEMINI_CLI_HOME"
         )
         XCTAssertNil(CLIBrowserLoginService.isolatedHomeEnvironmentVariable(for: .claude))
     }
@@ -171,15 +270,23 @@ final class UsageParsingTests: XCTestCase {
         )
     }
 
-    /// Provider sections remain stable even when persisted accounts arrive out of order.
+    /// Provider sections follow the default company order and respect explicit custom ordering.
     @MainActor
     func testMenuProviderSectionsUseStableCompanyOrder() {
         let claude = Account(provider: .claude, label: "Claude", plan: .pro)
         let codex = Account(provider: .codex, label: "Codex", plan: .plus)
+        let gemini = Account(provider: .gemini, label: "Gemini", plan: .pro)
 
         XCTAssertEqual(
-            MenuContentView.visibleProviders(in: [claude, codex]),
-            [.codex, .claude]
+            MenuContentView.visibleProviders(in: [gemini, claude, codex]),
+            [.codex, .claude, .gemini]
+        )
+        XCTAssertEqual(
+            MenuContentView.visibleProviders(
+                in: [gemini, claude, codex],
+                order: [.gemini, .claude, .codex]
+            ),
+            [.gemini, .claude, .codex]
         )
         XCTAssertEqual(MenuContentView.visibleProviders(in: [claude]), [.claude])
         XCTAssertTrue(MenuContentView.visibleProviders(in: []).isEmpty)
@@ -325,15 +432,19 @@ final class UsageParsingTests: XCTestCase {
 
         let activeAccount = manager.accounts[0]
         let inactiveAccount = manager.accounts[1]
-        let remainingAccount = manager.accounts[2]
+        let claudeAccount = manager.accounts[2]
+        let geminiAccount = manager.accounts[3]
 
         XCTAssertTrue(manager.rename(inactiveAccount, to: "  Secondary  "))
         XCTAssertEqual(manager.accounts[1].displayLabel, "Secondary")
         XCTAssertFalse(manager.rename(inactiveAccount, to: "   "))
 
         XCTAssertFalse(manager.remove(activeAccount))
-        XCTAssertEqual(manager.accounts.count, 3)
+        XCTAssertEqual(manager.accounts.count, 4)
         XCTAssertTrue(manager.remove(inactiveAccount))
-        XCTAssertEqual(manager.accounts.map(\.id), [activeAccount.id, remainingAccount.id])
+        XCTAssertEqual(
+            manager.accounts.map(\.id),
+            [activeAccount.id, claudeAccount.id, geminiAccount.id]
+        )
     }
 }

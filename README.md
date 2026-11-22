@@ -1,10 +1,11 @@
 # AI Switcher
 
-**Switch Codex and Claude accounts from your Mac’s menu bar.**
+**Switch Codex, Claude, and Gemini accounts from your Mac’s menu bar.**
 
-Keep multiple CLI logins in one place, see their remaining quota, and choose the
-account you want to use next. Built with SwiftUI and AppKit for macOS, with English
-and Simplified Chinese interfaces.
+Keep multiple CLI logins in one place, see their remaining quota, reorder
+accounts and provider sections by dragging, and choose the account you want to
+use next. Built with SwiftUI and AppKit for macOS, with English and Simplified
+Chinese interfaces.
 
 **English** · [简体中文](README.zh-CN.md)
 
@@ -17,10 +18,16 @@ and Simplified Chinese interfaces.
 
 ## Features
 
-- **Multiple accounts, two providers.** Keep one Codex account and one Claude
-  account active independently. Switch from an account’s title or the account submenu.
-- **Quota at a glance.** View remaining 5-hour and 7-day capacity, reset dates,
-  and plan information when the provider supplies them.
+- **Multiple accounts, three providers.** Keep one Codex, one Claude, and one
+  Gemini account active independently. Switch from an account’s title or the
+  account submenu.
+- **Quota at a glance.** View remaining 5-hour and 7-day capacity for Codex and
+  Claude, Pro and Flash daily model quota for Gemini, reset dates, and plan
+  information when the provider supplies them.
+- **Drag-and-drop ordering.** Reorder accounts within each provider section and
+  reorder provider sections directly in the menu-bar dropdown or in Account
+  Settings; the saved order persists across launches and syncs to the hover
+  submenu.
 - **Three ways to add accounts.** Sign in through the installed CLI’s browser
   flow, import its current login, or import a credential JSON file.
 - **Credential recovery.** Refresh expired OAuth tokens and reconcile matching
@@ -39,8 +46,8 @@ and Simplified Chinese interfaces.
 | --- | --- |
 | Operating system | macOS 14 Sonoma or later |
 | Build tools | Swift 6.0+ and a macOS SDK, supplied by a compatible Xcode or Command Line Tools installation |
-| Provider login | A Codex ChatGPT OAuth login and/or a Claude Code OAuth login |
-| Browser sign-in | The corresponding `codex` or `claude` CLI must be installed |
+| Provider login | A Codex ChatGPT OAuth login, a Claude Code OAuth login, and/or a Gemini CLI Google OAuth login |
+| Browser sign-in | The corresponding `codex`, `claude`, or `gemini` CLI must be installed |
 | Network | Required for browser sign-in, usage refresh, and reset-credit redemption |
 
 The Swift package has no third-party package dependencies and uses the system
@@ -68,8 +75,8 @@ in Finder, and launch that copy. Enable **Launch at Login** from its menu if des
 ### Add your first account
 
 At startup, AI Switcher looks for existing logins in the supported credential
-stores. To add or repair a login, open **Add Account**, select **Codex** or
-**Claude**, and choose an option:
+stores. To add or repair a login, open **Add Account**, select **Codex**,
+**Claude**, or **Gemini**, and choose an option:
 
 | Option | When to use it | Result |
 | --- | --- | --- |
@@ -83,17 +90,19 @@ For a terminal-based login, use the appropriate command, then select
 ```bash
 codex login          # Codex / ChatGPT
 claude auth login    # Claude Code
+gemini               # Gemini CLI (Sign in with Google)
 ```
 
 Repeat for additional accounts. **Account Settings** lets you rename accounts,
-activate a saved login, remove an inactive account after confirmation, and choose
-the interface language. Active accounts cannot be removed until you switch away.
+drag-and-drop reorder accounts and provider sections, activate a saved login,
+remove an inactive account after confirmation, and choose the interface
+language. Active accounts cannot be removed until you switch away.
 
 ### Switch accounts
 
 1. Click an account’s **title**, or hover **Account Settings** and select a login.
-2. Check the **✓** beside the selected account. Codex and Claude each have their
-   own active selection.
+2. Check the **✓** beside the selected account. Codex, Claude, and Gemini each
+   have their own active selection.
 3. Start a CLI session that loads the selected credential.
 
 The app snapshots the current live credential before replacing it. An existing
@@ -124,19 +133,22 @@ With the menu open:
 
 ## Compatibility
 
-| Capability | Codex / OpenAI | Claude / Anthropic |
-| --- | --- | --- |
-| Managed login | ChatGPT OAuth through Codex CLI | Claude Code OAuth |
-| Live credential | `~/.codex/auth.json` | macOS Keychain service `Claude Code-credentials` |
-| Additional local data | Account identity from the credential | File fallback at `~/.claude/.credentials.json`; identity read from `~/.claude.json` |
-| Usage | 5-hour / 7-day windows when returned | 5-hour / 7-day windows when returned |
-| Manual reset credits | When available from the provider | Not supported |
-| Active accounts | One | One, independent of Codex |
+| Capability | Codex / OpenAI | Claude / Anthropic | Gemini / Google |
+| --- | --- | --- | --- |
+| Managed login | ChatGPT OAuth through Codex CLI | Claude Code OAuth | Antigravity CLI (`agy`) usage recording and/or Gemini CLI Google OAuth |
+| Live credential / source | `~/.codex/auth.json` | macOS Keychain service `Claude Code-credentials` | Documented `agy` `statusLine` hook (`antigravity-usage.json`) and/or `~/.gemini/oauth_creds.json` |
+| Additional local data | Account identity from the credential | File fallback at `~/.claude/.credentials.json`; identity read from `~/.claude.json` | Preserves existing `~/.gemini/antigravity-cli/settings.json`; syncs `~/.gemini/google_accounts.json` for Gemini CLI |
+| Usage | 5-hour / 7-day windows when returned | 5-hour / 7-day windows when returned | 5-hour / 7-day windows for `agy`; Pro / Flash daily buckets for `gemini` CLI |
+| Manual reset credits | When available from the provider | Not supported | Not supported |
+| Active accounts | One | One, independent | One, independent |
 
 Codex credentials stored only in the OS keyring or under a custom `CODEX_HOME`
 are not managed by the current store. API-key-only profiles are not supported by
 the account import flow. Claude switching requires a writable, initialized
 Keychain login item; a fallback file alone cannot complete a macOS switch.
+Gemini token refresh resolves the public desktop OAuth client from the local
+`gemini` CLI installation (or `GEMINI_OAUTH_CLIENT_ID` /
+`GEMINI_OAUTH_CLIENT_SECRET`); no OAuth client secret is embedded in this app.
 
 Usage and reset-credit integrations rely on undocumented provider backend APIs,
 which can change. Available fields and actions depend on the account and provider
@@ -148,9 +160,10 @@ App-managed data lives under `~/Library/Application Support/AISwitcher/`:
 
 | Path | Contents |
 | --- | --- |
-| `accounts.json` | Account metadata, custom names, active selections, and cached usage |
+| `accounts.json` | Account metadata, custom names, saved account/section order, active selections, and cached usage |
 | `codex-accounts/` | Saved Codex credential snapshots |
 | `claude-accounts/` | Saved Claude credential snapshots |
+| `gemini-accounts/` | Saved Gemini credential snapshots |
 | `runtime.sqlite` | Accumulated app runtime in milliseconds; no credentials or event history |
 
 Credential snapshots are sensitive JSON files, written atomically with owner-only

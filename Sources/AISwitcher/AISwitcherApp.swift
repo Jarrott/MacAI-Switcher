@@ -104,14 +104,14 @@ struct AISwitcherApp: App {
             AddAccountView(accounts: accounts, loc: loc)
                 .id(loc.language)
         }
-        .defaultSize(width: 520, height: 430)
+        .defaultSize(width: 520, height: 450)
         .windowResizability(.contentSize)
 
         Window("Account Settings", id: AppWindowID.accountSettings) {
             SettingsView(accounts: accounts, loc: loc)
                 .id(loc.language)
         }
-        .defaultSize(width: 580, height: 440)
+        .defaultSize(width: 580, height: 460)
         .windowResizability(.contentSize)
 
         // Settings window (also reachable via the standard Settings scene).

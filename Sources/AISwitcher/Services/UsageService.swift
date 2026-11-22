@@ -53,6 +53,12 @@ enum UsageService {
     private static let codexConsumeResetURL = URL(
         string: "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume"
     )!
+    static let geminiLoadCodeAssistURL = URL(
+        string: "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+    )!
+    static let geminiRetrieveQuotaURL = URL(
+        string: "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota"
+    )!
 
     // MARK: Public entry point
 
@@ -66,6 +72,11 @@ enum UsageService {
         switch account.provider {
         case .codex: return try await fetchCodex(account)
         case .claude: return try await ClaudeUsageCoordinator.shared.fetch(for: account)
+        case .gemini:
+            if AntigravityUsageStore.isAntigravityAccountID(account.accountID) {
+                return try fetchAntigravity(account)
+            }
+            return try await fetchGemini(account)
         }
     }
 
@@ -403,6 +414,281 @@ enum UsageService {
             sevenDay: window("seven_day"),
             resetsAvailable: nil,
             fetchedAt: Date()
+        )
+    }
+
+    // MARK: Gemini
+
+    /// Fetch Gemini CLI usage via Cloud Code Assist (`loadCodeAssist` + `retrieveUserQuota`).
+    ///
+    /// - Parameters:
+    ///   - account: Managed Gemini account whose saved OAuth snapshot authorizes requests.
+    ///   - coordinator: Shared auth coordinator handling proactive refresh and one 401 retry.
+    /// - Returns: Parsed Pro and Flash daily quota windows plus discovered subscription tier.
+    static func fetchGemini(
+        _ account: Account,
+        coordinator: GeminiAuthCoordinator = .shared
+    ) async throws -> Usage {
+        var loadRequest = URLRequest(url: geminiLoadCodeAssistURL)
+        loadRequest.httpMethod = "POST"
+        loadRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        loadRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+        loadRequest.httpBody = try JSONSerialization.data(withJSONObject: [
+            "metadata": [
+                "ideType": "IDE_UNSPECIFIED",
+                "platform": "PLATFORM_UNSPECIFIED",
+                "pluginType": "GEMINI",
+            ]
+        ])
+
+        var projectID: String?
+        var discoveredPlan: PlanTier?
+        var loadStatusCode: Int?
+        let (loadData, loadResponse, _) = try await coordinator.send(loadRequest, for: account)
+        if (200..<300).contains(loadResponse.statusCode) {
+            if let loadPayload = try? decodeJSON(loadData) {
+                let parsed = parseGeminiCodeAssist(loadPayload)
+                projectID = parsed.projectID
+                if parsed.plan != .unknown {
+                    discoveredPlan = parsed.plan
+                }
+            }
+        } else {
+            loadStatusCode = loadResponse.statusCode
+        }
+
+        var quotaRequest = URLRequest(url: geminiRetrieveQuotaURL)
+        quotaRequest.httpMethod = "POST"
+        quotaRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        quotaRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+        var quotaBody: [String: Any] = [:]
+        if let projectID { quotaBody["project"] = projectID }
+        quotaRequest.httpBody = try JSONSerialization.data(withJSONObject: quotaBody)
+
+        let (quotaData, quotaResponse, _) = try await coordinator.send(quotaRequest, for: account)
+        guard (200..<300).contains(quotaResponse.statusCode) else {
+            throw FetchError.http(
+                quotaResponse.statusCode != 0 ? quotaResponse.statusCode : (loadStatusCode ?? 500))
+        }
+        return parseGemini(try decodeJSON(quotaData), discoveredPlan: discoveredPlan)
+    }
+
+    /// Parse `v1internal:loadCodeAssist` project ID and subscription tier without fabricating values.
+    static func parseGeminiCodeAssist(_ obj: [String: Any]) -> (projectID: String?, plan: PlanTier)
+    {
+        let projectID: String?
+        if let raw = obj["cloudaicompanionProject"] as? String {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            projectID = trimmed.isEmpty ? nil : trimmed
+        } else if let dict = obj["cloudaicompanionProject"] as? [String: Any],
+            let raw = dict["id"] as? String
+        {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            projectID = trimmed.isEmpty ? nil : trimmed
+        } else {
+            projectID = nil
+        }
+
+        let paidTier = obj["paidTier"] as? [String: Any]
+        let currentTier = obj["currentTier"] as? [String: Any]
+        let candidates = [
+            paidTier?["id"] as? String,
+            paidTier?["name"] as? String,
+            currentTier?["id"] as? String,
+            currentTier?["name"] as? String,
+        ]
+        var plan = PlanTier.unknown
+        for candidate in candidates {
+            let parsed = PlanTier.parse(candidate)
+            if parsed != .unknown {
+                plan = parsed
+                break
+            }
+        }
+        return (projectID, plan)
+    }
+
+    /// Parse `v1internal:retrieveUserQuota` buckets into Pro (`fiveHour`) and Flash (`sevenDay`) windows.
+    ///
+    /// When multiple models map to the same family (e.g. `gemini-2.5-pro` and `gemini-3-pro-preview`),
+    /// the most constrained bucket (lowest `remainingFraction`, breaking ties by earliest `resetTime`)
+    /// is chosen so exhaustion is never hidden. Missing or non-numeric buckets remain unknown.
+    static func parseGemini(
+        _ obj: [String: Any],
+        discoveredPlan: PlanTier? = nil
+    ) -> Usage {
+        let buckets = obj["buckets"] as? [[String: Any]] ?? []
+
+        struct Candidate {
+            let remaining: Double
+            let resetsAt: Date?
+        }
+
+        func pickMoreConstrained(_ existing: Candidate?, _ incoming: Candidate) -> Candidate {
+            guard let existing else { return incoming }
+            if incoming.remaining < existing.remaining { return incoming }
+            if incoming.remaining > existing.remaining { return existing }
+            switch (existing.resetsAt, incoming.resetsAt) {
+            case (.some(let a), .some(let b)): return b < a ? incoming : existing
+            case (.none, .some): return incoming
+            default: return existing
+            }
+        }
+
+        var proCandidate: Candidate?
+        var flashCandidate: Candidate?
+        var fallbackCandidate: Candidate?
+
+        for bucket in buckets {
+            guard let rawRemaining = jsonNumber(bucket["remainingFraction"]) else { continue }
+            let remaining = min(1.0, max(0.0, rawRemaining))
+            let resetsAt = (bucket["resetTime"] as? String).flatMap(ISO8601DateFormatter.parse)
+            let candidate = Candidate(remaining: remaining, resetsAt: resetsAt)
+            let modelID = (bucket["modelId"] as? String ?? "").lowercased()
+
+            if modelID.contains("pro") {
+                proCandidate = pickMoreConstrained(proCandidate, candidate)
+            } else if modelID.contains("flash") {
+                flashCandidate = pickMoreConstrained(flashCandidate, candidate)
+            } else {
+                fallbackCandidate = pickMoreConstrained(fallbackCandidate, candidate)
+            }
+        }
+
+        if proCandidate == nil && flashCandidate == nil {
+            proCandidate = fallbackCandidate
+        }
+
+        func window(from candidate: Candidate?) -> UsageWindow {
+            guard let candidate else { return .unknown }
+            return UsageWindow(
+                usedFraction: 1.0 - candidate.remaining,
+                resetsAt: candidate.resetsAt
+            )
+        }
+
+        return Usage(
+            fiveHour: window(from: proCandidate),
+            sevenDay: window(from: flashCandidate),
+            resetsAvailable: nil,
+            fetchedAt: Date(),
+            discoveredPlan: discoveredPlan == .unknown ? nil : discoveredPlan
+        )
+    }
+
+    // MARK: Antigravity (agy)
+
+    /// Read the latest locally recorded Antigravity CLI (`agy`) usage snapshot for one account.
+    static func fetchAntigravity(
+        _ account: Account,
+        store: AntigravityUsageStore = .shared
+    ) throws -> Usage {
+        let email =
+            account.email ?? AntigravityUsageStore.email(fromAccountID: account.accountID)
+        guard let email, let snapshot = store.snapshot(forEmail: email) else {
+            throw GeminiAuthError.missingCredentials
+        }
+        return parseAntigravityQuota(snapshot)
+    }
+
+    /// Parse Antigravity CLI `statusLine` quota buckets into 5-hour and 7-day Gemini windows.
+    ///
+    /// Prefers Gemini-labeled buckets when present and excludes Claude/GPT buckets. When
+    /// multiple Gemini buckets map to the same window, selects the lowest `remainingFraction`
+    /// (breaking ties by earliest reset time) so quota exhaustion is never hidden.
+    static func parseAntigravityQuota(_ snapshot: AntigravityUsageSnapshot) -> Usage {
+        struct Candidate {
+            let remaining: Double
+            let resetsAt: Date?
+        }
+
+        func pickMoreConstrained(_ existing: Candidate?, _ incoming: Candidate) -> Candidate {
+            guard let existing else { return incoming }
+            if incoming.remaining < existing.remaining { return incoming }
+            if incoming.remaining > existing.remaining { return existing }
+            switch (existing.resetsAt, incoming.resetsAt) {
+            case (.some(let a), .some(let b)): return b < a ? incoming : existing
+            case (.none, .some): return incoming
+            default: return existing
+            }
+        }
+
+        let entries = snapshot.quota.filter { _, bucket in
+            bucket.disabled != true
+        }
+        let hasGeminiNamedBucket = entries.keys.contains { $0.lowercased().contains("gemini") }
+        let eligibleEntries = entries.filter { key, _ in
+            let lowered = key.lowercased()
+            if hasGeminiNamedBucket {
+                return lowered.contains("gemini")
+            }
+            return !lowered.contains("claude")
+                && !lowered.contains("anthropic")
+                && !lowered.contains("gpt")
+                && !lowered.contains("openai")
+        }
+
+        var fiveHourCandidate: Candidate?
+        var sevenDayCandidate: Candidate?
+        var fallbackCandidate: Candidate?
+
+        for (rawKey, bucket) in eligibleEntries {
+            guard let rawRemaining = bucket.remainingFraction, rawRemaining.isFinite else {
+                continue
+            }
+            let remaining = min(1.0, max(0.0, rawRemaining))
+            let resetsAt: Date?
+            if let iso = bucket.resetTime, let parsed = ISO8601DateFormatter.parse(iso) {
+                resetsAt = parsed
+            } else if let seconds = bucket.resetInSeconds, seconds.isFinite, seconds > 0 {
+                resetsAt = snapshot.recordedAt.addingTimeInterval(seconds)
+            } else {
+                resetsAt = nil
+            }
+            let candidate = Candidate(remaining: remaining, resetsAt: resetsAt)
+            let key = rawKey.lowercased()
+            let inferredDuration =
+                bucket.resetInSeconds
+                ?? resetsAt.map { $0.timeIntervalSince(snapshot.recordedAt) }
+
+            let isWeeklyByName =
+                key.contains("week") || key.contains("7d") || key.contains("seven")
+            let isShortByName =
+                key.contains("5h") || key.contains("five") || key.contains("session")
+                || key.contains("hour") || key.contains("daily") || key.contains("24h")
+
+            if isWeeklyByName {
+                sevenDayCandidate = pickMoreConstrained(sevenDayCandidate, candidate)
+            } else if isShortByName {
+                fiveHourCandidate = pickMoreConstrained(fiveHourCandidate, candidate)
+            } else if let duration = inferredDuration, duration > 86_400 {
+                sevenDayCandidate = pickMoreConstrained(sevenDayCandidate, candidate)
+            } else if let duration = inferredDuration, duration > 0 {
+                fiveHourCandidate = pickMoreConstrained(fiveHourCandidate, candidate)
+            } else {
+                fallbackCandidate = pickMoreConstrained(fallbackCandidate, candidate)
+            }
+        }
+
+        if fiveHourCandidate == nil && sevenDayCandidate == nil {
+            fiveHourCandidate = fallbackCandidate
+        }
+
+        func window(from candidate: Candidate?) -> UsageWindow {
+            guard let candidate else { return .unknown }
+            return UsageWindow(
+                usedFraction: 1.0 - candidate.remaining,
+                resetsAt: candidate.resetsAt
+            )
+        }
+
+        let plan = PlanTier.parse(snapshot.planTier)
+        return Usage(
+            fiveHour: window(from: fiveHourCandidate),
+            sevenDay: window(from: sevenDayCandidate),
+            resetsAvailable: nil,
+            fetchedAt: snapshot.recordedAt,
+            discoveredPlan: plan == .unknown ? nil : plan
         )
     }
 

@@ -1,9 +1,9 @@
 # AI Switcher
 
-**在 macOS 菜单栏中切换 Codex 与 Claude 账号。**
+**在 macOS 菜单栏中切换 Codex、Claude 与 Gemini 账号。**
 
-集中管理多个 CLI 登录账号，查看剩余额度，选择下一次使用的账号。
-使用 SwiftUI 与 AppKit 构建，支持英文和简体中文界面。
+集中管理多个 CLI 登录账号，查看剩余额度，支持拖拽调整账号与服务商分组顺序，
+快速选择下一次使用的账号。使用 SwiftUI 与 AppKit 构建，支持英文和简体中文界面。
 
 [English](README.md) · **简体中文**
 
@@ -16,8 +16,9 @@
 
 ## 主要功能
 
-- **多账号、双服务商**：Codex 与 Claude 分别维护当前账号，互不影响；点击账号标题或通过账号子菜单即可切换。
-- **额度一目了然**：展示服务商返回的 5 小时、7 天剩余额度、重置时间和套餐信息。
+- **多账号、三服务商**：Codex、Claude 与 Gemini 分别维护当前账号，互不影响；点击账号标题或通过账号子菜单即可切换。
+- **额度一目了然**：展示 Codex 与 Claude 的 5 小时、7 天剩余额度，以及 Gemini 的 Pro / Flash 每日模型剩余额度、重置时间和套餐信息。
+- **拖拽自由排序**：在菜单栏面板与账号设置窗口中均可拖拽调整分组内账号顺序及服务商分组顺序，顺序持久化保存并实时同步到悬停子菜单。
 - **三种添加方式**：调用已安装 CLI 的浏览器登录流程、导入当前登录，或导入凭据 JSON 文件。
 - **登录恢复**：刷新过期的 OAuth 令牌，同步同一账号被 CLI 更新的凭据；重新授权无需先删除账号。
 - **Codex 重置次数**：在账号支持时显示可用次数，经明确确认后消耗一次进行额度重置。
@@ -31,8 +32,8 @@
 | --- | --- |
 | 操作系统 | macOS 14 Sonoma 或更新版本 |
 | 编译工具 | Swift 6.0+ 与 macOS SDK，由兼容版本的 Xcode 或 Command Line Tools 提供 |
-| 账号类型 | Codex 的 ChatGPT OAuth 登录，或 Claude Code 的 OAuth 登录 |
-| 浏览器登录 | 已安装对应的 `codex` 或 `claude` CLI |
+| 账号类型 | Codex 的 ChatGPT OAuth 登录、Claude Code OAuth 登录，或 Gemini CLI Google OAuth 登录 |
+| 浏览器登录 | 已安装对应的 `codex`、`claude` 或 `gemini` CLI |
 | 网络 | 浏览器登录、额度刷新和消耗重置次数需要联网 |
 
 Swift 包没有第三方包依赖，使用系统自带的 SQLite。只需配置你实际使用的服务商。
@@ -58,7 +59,7 @@ open ".build/release/AI Switcher.app"
 ### 添加第一个账号
 
 应用启动时会在支持的凭据位置查找已有登录。需要新增账号或修复登录时，
-打开**添加账号**，选择 **Codex** 或 **Claude**，再选择以下方式：
+打开**添加账号**，选择 **Codex**、**Claude** 或 **Gemini**，再选择以下方式：
 
 | 操作 | 适用情况 | 执行结果 |
 | --- | --- | --- |
@@ -71,15 +72,17 @@ open ".build/release/AI Switcher.app"
 ```bash
 codex login          # Codex / ChatGPT
 claude auth login    # Claude Code
+gemini               # Gemini CLI（Sign in with Google）
 ```
 
-重复上述流程即可添加更多账号。**账号设置**支持修改名称、切换账号、确认移除非当前账号，以及选择界面语言。
+重复上述流程即可添加更多账号。**账号设置**支持修改名称、拖拽调整账号与服务商分组顺序、
+切换账号、确认移除非当前账号，以及选择界面语言。
 当前账号受删除保护，需要先切换到同一服务商的其他账号才能移除。
 
 ### 切换账号
 
 1. 点击账号的**标题行**，或将鼠标移到**账号设置**，在子菜单中选择账号。
-2. 查看账号旁的 **✓**。Codex 和 Claude 各自拥有独立的当前账号。
+2. 查看账号旁的 **✓**。Codex、Claude 和 Gemini 各自拥有独立的当前账号。
 3. 启动会重新读取所选凭据的 CLI 会话。
 
 替换凭据前，应用会先保存当前实际登录的凭据快照。
@@ -105,18 +108,20 @@ claude auth login    # Claude Code
 
 ## 兼容范围
 
-| 能力 | Codex / OpenAI | Claude / Anthropic |
-| --- | --- | --- |
-| 管理的登录类型 | Codex CLI 的 ChatGPT OAuth 登录 | Claude Code OAuth 登录 |
-| 实际登录凭据 | `~/.codex/auth.json` | macOS 钥匙串中的 `Claude Code-credentials` 项 |
-| 其他本地数据 | 从凭据中解析账号身份 | 备用文件 `~/.claude/.credentials.json`；只读 `~/.claude.json` 获取身份 |
-| 额度窗口 | 服务商返回时显示 5 小时 / 7 天额度 | 服务商返回时显示 5 小时 / 7 天额度 |
-| 手动重置次数 | 服务商提供时可用 | 不支持 |
-| 当前账号 | 一个 | 一个，与 Codex 独立 |
+| 能力 | Codex / OpenAI | Claude / Anthropic | Gemini / Google |
+| --- | --- | --- | --- |
+| 管理的登录/来源 | Codex CLI 的 ChatGPT OAuth 登录 | Claude Code OAuth 登录 | Antigravity CLI (`agy`) 用量记录，及/或 Gemini CLI 的 Google OAuth 登录 |
+| 实际凭据/数据源 | `~/.codex/auth.json` | macOS 钥匙串中的 `Claude Code-credentials` 项 | `agy` 官方 `statusLine` 回调缓存（`antigravity-usage.json`）及/或 `~/.gemini/oauth_creds.json` |
+| 其他本地数据 | 从凭据中解析账号身份 | 备用文件 `~/.claude/.credentials.json`；只读 `~/.claude.json` 获取身份 | 保留 `~/.gemini/antigravity-cli/settings.json` 原有配置；Gemini CLI 同步 `~/.gemini/google_accounts.json` |
+| 额度窗口 | 服务商返回时显示 5 小时 / 7 天额度 | 服务商返回时显示 5 小时 / 7 天额度 | `agy` 显示 5 小时 / 7 天额度；`gemini` CLI 显示 Pro / Flash 每日额度 |
+| 手动重置次数 | 服务商提供时可用 | 不支持 | 不支持 |
+| 当前账号 | 一个 | 一个，独立维护 | 一个，独立维护 |
 
 当前 Codex 存储实现不管理仅保存在系统钥匙串中的凭据，也不读取自定义 `CODEX_HOME`。
 账号导入流程不支持仅包含 API Key 的配置。Claude 切换需要已初始化且可写的钥匙串登录项，
-仅有备用文件不能完成 macOS 上的账号切换。
+仅有备用文件不能完成 macOS 上的账号切换。Gemini 令牌刷新从本地已安装的 `gemini` CLI
+（或 `GEMINI_OAUTH_CLIENT_ID` / `GEMINI_OAUTH_CLIENT_SECRET` 环境变量）动态读取桌面 OAuth 客户端配置，
+仓库内不硬编码任何客户端密钥。
 
 额度和重置功能使用服务商未公开承诺稳定性的后端接口，接口可能变化；
 具体可用字段与操作取决于账号和实际响应。请求格式与恢复机制见 [API 文档](docs/API.md)。
@@ -127,9 +132,10 @@ claude auth login    # Claude Code
 
 | 路径 | 内容 |
 | --- | --- |
-| `accounts.json` | 账号元数据、自定义名称、当前账号选择和额度缓存 |
+| `accounts.json` | 账号元数据、自定义名称、自定义排序与分组顺序、当前账号选择和额度缓存 |
 | `codex-accounts/` | Codex 凭据快照 |
 | `claude-accounts/` | Claude 凭据快照 |
+| `gemini-accounts/` | Gemini 凭据快照 |
 | `runtime.sqlite` | 以毫秒记录的累计运行时间，不包含凭据或事件历史 |
 
 凭据快照是敏感 JSON 文件，采用原子写入，文件权限为仅当前用户可读写的 `0600`，

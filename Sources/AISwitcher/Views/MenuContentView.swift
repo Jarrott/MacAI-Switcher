@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Compact menu-bar dropdown containing account usage and working app actions.
+/// Compact menu-bar dropdown containing account usage, drag reordering, and app actions.
 /// The fixed metrics intentionally follow native macOS menu density.
 struct MenuContentView: View {
     @Bindable var accounts: AccountsManager
@@ -10,14 +10,33 @@ struct MenuContentView: View {
     /// When true, use a solid dark fill instead of the live blur (offscreen render).
     var solidBackground: Bool = false
 
+    private nonisolated static let reorderCoordinateSpace = "menu-accounts-space"
+
     @State private var launchAtLogin = LaunchAtLogin.isEnabled
     @State private var showAccountSwitcher = false
     @State private var settingsRowHovering = false
     @State private var accountSwitcherHovering = false
     @State private var accountSwitcherDismissTask: Task<Void, Never>?
+
+    // Drag-reordering state for provider sections.
+    @State private var draggingProvider: Provider?
+    @State private var providerDragOffset: CGFloat = 0
+    @State private var providerDropIndex: Int?
+    @State private var providerFrames: [Provider: CGRect] = [:]
+    @State private var dragStartProviderFrames: [Provider: CGRect] = [:]
+
+    // Drag-reordering state for accounts inside one provider section.
+    @State private var draggingAccountID: UUID?
+    @State private var draggingAccountProvider: Provider?
+    @State private var accountDragOffset: CGFloat = 0
+    @State private var accountDropIndex: Int?
+    @State private var accountFrames: [UUID: CGRect] = [:]
+    @State private var dragStartAccountFrames: [UUID: CGRect] = [:]
+
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
+        let providers = accounts.visibleProviders
         VStack(alignment: .leading, spacing: 0) {
 
             // Persisted accumulated runtime and optional trial status.
@@ -46,7 +65,7 @@ struct MenuContentView: View {
             .padding(.bottom, 3)
             divider
 
-            // Account cards, grouped into visually distinct provider sections.
+            // Account cards, grouped into draggable provider sections.
             if accounts.accounts.isEmpty {
                 Text(loc.string("menu.no_accounts"))
                     .font(.system(size: 13))
@@ -56,42 +75,16 @@ struct MenuContentView: View {
                     .padding(.vertical, 24)
             } else {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Self.visibleProviders(in: accounts.accounts)) { provider in
-                        let providerAccounts = accounts.accounts.filter {
-                            $0.provider == provider
-                        }
-                        ProviderSectionView(provider: provider) {
-                            ForEach(Array(providerAccounts.enumerated()), id: \.element.id) {
-                                idx, account in
-                                AccountCardView(
-                                    account: account,
-                                    isActive: accounts.isActive(account),
-                                    isRefreshing: accounts.isRefreshing
-                                        && account.usage.fetchedAt == nil,
-                                    isResetting: accounts.isResetting(account),
-                                    errorMessage: accounts.refreshError(for: account),
-                                    locale: loc.locale,
-                                    onSelect: { Task { await accounts.activate(account) } },
-                                    onConsumeReset: { creditID in
-                                        try await accounts.consumeResetCredit(
-                                            for: account,
-                                            creditID: creditID
-                                        )
-                                    }
-                                )
-                                .padding(.horizontal, 6)
-
-                                if idx < providerAccounts.count - 1 {
-                                    Rectangle()
-                                        .fill(Color.white.opacity(0.10))
-                                        .frame(height: 0.75)
-                                        .padding(.leading, 39)
-                                        .padding(.trailing, 9)
-                                }
-                            }
-                        }
+                    ForEach(Array(providers.enumerated()), id: \.element.id) {
+                        providerIndex, provider in
+                        providerSection(
+                            provider: provider,
+                            providerIndex: providerIndex,
+                            providers: providers
+                        )
                     }
                 }
+                .coordinateSpace(name: Self.reorderCoordinateSpace)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 4)
             }
@@ -169,13 +162,244 @@ struct MenuContentView: View {
             NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)
         ) { _ in
             dismissAccountSwitcher()
+            resetDragState()
         }
         .onReceive(
             NotificationCenter.default.publisher(for: MenuBarPanelController.didCloseNotification)
         ) { _ in
             dismissAccountSwitcher()
+            resetDragState()
         }
-        .onDisappear(perform: dismissAccountSwitcher)
+        .onAppear {
+            if !solidBackground {
+                _ = accounts.syncAntigravityAccounts()
+            }
+        }
+        .onDisappear {
+            dismissAccountSwitcher()
+            resetDragState()
+        }
+    }
+
+    @ViewBuilder
+    private func providerSection(
+        provider: Provider,
+        providerIndex: Int,
+        providers: [Provider]
+    ) -> some View {
+        let providerAccounts = accounts.accounts(for: provider)
+        let isDraggingThisSection = draggingProvider == provider
+        let showTopIndicator = draggingProvider != nil && providerDropIndex == providerIndex
+        let showBottomIndicator =
+            draggingProvider != nil
+            && providerIndex == providers.count - 1
+            && providerDropIndex == providers.count
+
+        ProviderSectionView(
+            provider: provider,
+            canReorder: providers.count > 1,
+            isDragging: isDraggingThisSection,
+            dragCoordinateSpace: Self.reorderCoordinateSpace,
+            onDragChanged: { value in
+                handleProviderDragChanged(provider: provider, value: value, providers: providers)
+            },
+            onDragEnded: handleProviderDragEnded
+        ) {
+            ForEach(Array(providerAccounts.enumerated()), id: \.element.id) { idx, account in
+                accountCardRow(
+                    account: account,
+                    index: idx,
+                    providerAccounts: providerAccounts
+                )
+            }
+        }
+        .onGeometryChange(for: CGRect.self) { proxy in
+            proxy.frame(in: .named(Self.reorderCoordinateSpace))
+        } action: { frame in
+            if draggingProvider == nil && draggingAccountID == nil {
+                providerFrames[provider] = frame
+            }
+        }
+        .offset(y: isDraggingThisSection ? providerDragOffset : 0)
+        .zIndex(isDraggingThisSection || draggingAccountProvider == provider ? 20 : 0)
+        .overlay(alignment: .top) {
+            if showTopIndicator, let moving = draggingProvider {
+                DropInsertionIndicator(color: moving.menuAccentColor)
+                    .padding(.horizontal, 6)
+                    .offset(y: -5)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if showBottomIndicator, let moving = draggingProvider {
+                DropInsertionIndicator(color: moving.menuAccentColor)
+                    .padding(.horizontal, 6)
+                    .offset(y: 5)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func accountCardRow(
+        account: Account,
+        index: Int,
+        providerAccounts: [Account]
+    ) -> some View {
+        let isDraggingThisAccount = draggingAccountID == account.id
+        let isTargetProvider = draggingAccountProvider == account.provider
+        let showTopIndicator = isTargetProvider && accountDropIndex == index
+        let showBottomIndicator =
+            isTargetProvider
+            && index == providerAccounts.count - 1
+            && accountDropIndex == providerAccounts.count
+
+        VStack(spacing: 0) {
+            AccountCardView(
+                account: account,
+                isActive: accounts.isActive(account),
+                isRefreshing: accounts.isRefreshing && account.usage.fetchedAt == nil,
+                isResetting: accounts.isResetting(account),
+                errorMessage: accounts.refreshError(for: account),
+                locale: loc.locale,
+                canReorder: providerAccounts.count > 1,
+                isDragging: isDraggingThisAccount,
+                dragCoordinateSpace: Self.reorderCoordinateSpace,
+                onDragChanged: { value in
+                    handleAccountDragChanged(
+                        account: account,
+                        value: value,
+                        providerAccounts: providerAccounts
+                    )
+                },
+                onDragEnded: handleAccountDragEnded,
+                onSelect: { Task { await accounts.activate(account) } },
+                onConsumeReset: { creditID in
+                    try await accounts.consumeResetCredit(
+                        for: account,
+                        creditID: creditID
+                    )
+                }
+            )
+            .padding(.horizontal, 6)
+            .onGeometryChange(for: CGRect.self) { proxy in
+                proxy.frame(in: .named(Self.reorderCoordinateSpace))
+            } action: { frame in
+                if draggingProvider == nil && draggingAccountID == nil {
+                    accountFrames[account.id] = frame
+                }
+            }
+            .offset(y: isDraggingThisAccount ? accountDragOffset : 0)
+            .zIndex(isDraggingThisAccount ? 30 : 0)
+            .overlay(alignment: .top) {
+                if showTopIndicator {
+                    DropInsertionIndicator(color: account.provider.menuAccentColor)
+                        .padding(.horizontal, 12)
+                        .offset(y: -1)
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if showBottomIndicator {
+                    DropInsertionIndicator(color: account.provider.menuAccentColor)
+                        .padding(.horizontal, 12)
+                        .offset(y: 1)
+                }
+            }
+
+            if index < providerAccounts.count - 1 {
+                Rectangle()
+                    .fill(Color.white.opacity(0.10))
+                    .frame(height: 0.75)
+                    .padding(.leading, 39)
+                    .padding(.trailing, 9)
+            }
+        }
+    }
+
+    private func handleProviderDragChanged(
+        provider: Provider,
+        value: DragGesture.Value,
+        providers: [Provider]
+    ) {
+        guard draggingAccountID == nil, providers.count > 1 else { return }
+        if draggingProvider == nil {
+            draggingProvider = provider
+            dragStartProviderFrames = providerFrames
+        }
+        guard draggingProvider == provider else { return }
+        providerDragOffset = value.translation.height
+        let target = ReorderGeometry.targetIndex(
+            forDragY: value.location.y,
+            orderedIDs: providers,
+            frames: dragStartProviderFrames
+        )
+        if let sourceIndex = providers.firstIndex(of: provider),
+            ReorderGeometry.movesItem(from: sourceIndex, to: target)
+        {
+            providerDropIndex = target
+        } else {
+            providerDropIndex = nil
+        }
+    }
+
+    private func handleProviderDragEnded() {
+        let moving = draggingProvider
+        let target = providerDropIndex
+        resetDragState()
+        if let moving, let target {
+            withAnimation(.snappy(duration: 0.2)) {
+                accounts.moveProvider(moving, toVisibleIndex: target)
+            }
+        }
+    }
+
+    private func handleAccountDragChanged(
+        account: Account,
+        value: DragGesture.Value,
+        providerAccounts: [Account]
+    ) {
+        guard draggingProvider == nil, providerAccounts.count > 1 else { return }
+        if draggingAccountID == nil {
+            draggingAccountID = account.id
+            draggingAccountProvider = account.provider
+            dragStartAccountFrames = accountFrames
+        }
+        guard draggingAccountID == account.id else { return }
+        accountDragOffset = value.translation.height
+        let orderedIDs = providerAccounts.map(\.id)
+        let target = ReorderGeometry.targetIndex(
+            forDragY: value.location.y,
+            orderedIDs: orderedIDs,
+            frames: dragStartAccountFrames
+        )
+        if let sourceIndex = orderedIDs.firstIndex(of: account.id),
+            ReorderGeometry.movesItem(from: sourceIndex, to: target)
+        {
+            accountDropIndex = target
+        } else {
+            accountDropIndex = nil
+        }
+    }
+
+    private func handleAccountDragEnded() {
+        let movingID = draggingAccountID
+        let target = accountDropIndex
+        resetDragState()
+        if let movingID, let target {
+            withAnimation(.snappy(duration: 0.2)) {
+                accounts.moveAccount(movingID, toIndexInProvider: target)
+            }
+        }
+    }
+
+    private func resetDragState() {
+        draggingProvider = nil
+        providerDragOffset = 0
+        providerDropIndex = nil
+        dragStartProviderFrames = [:]
+        draggingAccountID = nil
+        draggingAccountProvider = nil
+        accountDragOffset = 0
+        accountDropIndex = nil
+        dragStartAccountFrames = [:]
     }
 
     private var divider: some View {
@@ -186,14 +410,12 @@ struct MenuContentView: View {
             .padding(.vertical, 4)
     }
 
-    /// Return providers that have accounts in a stable OpenAI-then-Anthropic order.
-    ///
-    /// - Parameter accounts: Managed accounts in any persisted or discovery order.
-    /// - Returns: Only represented providers, ordered by `Provider.allCases`.
-    nonisolated static func visibleProviders(in accounts: [Account]) -> [Provider] {
-        Provider.allCases.filter { provider in
-            accounts.contains { $0.provider == provider }
-        }
+    /// Return providers that have accounts in the requested order (defaulting to `Provider.allCases`).
+    nonisolated static func visibleProviders(
+        in accounts: [Account],
+        order: [Provider] = Provider.allCases
+    ) -> [Provider] {
+        AccountsManager.visibleProviders(in: accounts, order: order)
     }
 
     /// Activate the menu-bar agent and open a dedicated SwiftUI utility window.
@@ -203,9 +425,6 @@ struct MenuContentView: View {
     }
 
     /// Track Account Settings hover and open its account switcher immediately.
-    ///
-    /// - Parameter isHovering: Whether the pointer is inside the action row.
-    /// - Side effects: Cancels pending dismissal and updates the attached popover.
     private func updateSettingsRowHover(_ isHovering: Bool) {
         settingsRowHovering = isHovering
         if isHovering {
@@ -217,9 +436,6 @@ struct MenuContentView: View {
     }
 
     /// Keep the submenu open while the pointer crosses into or remains inside it.
-    ///
-    /// - Parameter isHovering: Whether the pointer is inside the account popover.
-    /// - Side effects: Cancels or schedules the short native-submenu-style delay.
     private func updateAccountSwitcherHover(_ isHovering: Bool) {
         accountSwitcherHovering = isHovering
         if isHovering {
@@ -230,9 +446,6 @@ struct MenuContentView: View {
     }
 
     /// Delay dismissal long enough for the pointer to cross the popover gap.
-    ///
-    /// The delay has no parameters or return value. A newer hover event cancels
-    /// the task, so stale events cannot close a submenu currently in use.
     private func scheduleAccountSwitcherDismissal() {
         accountSwitcherDismissTask?.cancel()
         accountSwitcherDismissTask = Task { @MainActor in
@@ -245,10 +458,6 @@ struct MenuContentView: View {
     }
 
     /// Activate a submenu account and close the hover surface.
-    ///
-    /// - Parameter account: Managed account selected by the user.
-    /// - Side effects: Atomically replaces that provider's live credential when
-    ///   needed, then dismisses the account switcher.
     private func selectAccountFromSwitcher(_ account: Account) {
         if !accounts.isActive(account) {
             Task { await accounts.activate(account) }
@@ -269,9 +478,6 @@ struct MenuContentView: View {
     }
 
     /// Clear stale hover state after native or application-driven focus loss.
-    ///
-    /// This method has no parameters or return value. It cancels delayed work and
-    /// clears both hover regions without attempting to present or dismiss UI.
     private func resetAccountSwitcherHoverState() {
         accountSwitcherDismissTask?.cancel()
         accountSwitcherDismissTask = nil
@@ -289,11 +495,6 @@ struct MenuContentView: View {
     }
 
     /// Format accumulated runtime without seconds so the menu can update once per minute.
-    ///
-    /// - Parameters:
-    ///   - interval: Nonnegative accumulated running time in seconds.
-    ///   - loc: Active localization resolver.
-    /// - Returns: A compact localized duration such as `1d 2h 3m` or `2小时 3分`.
     static func runtimeText(_ interval: TimeInterval, loc: LocalizationManager) -> String {
         let totalMinutes = Int(max(0, interval)) / 60
         let days = totalMinutes / (24 * 60)

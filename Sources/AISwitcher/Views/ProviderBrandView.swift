@@ -8,6 +8,7 @@ extension Provider {
         switch self {
         case .codex: return "OpenAI"
         case .claude: return "Anthropic"
+        case .gemini: return "Google"
         }
     }
 
@@ -19,6 +20,8 @@ extension Provider {
             return Color(red: 0.28, green: 0.78, blue: 0.71)
         case .claude:
             return Color(red: 0.85, green: 0.47, blue: 0.34)
+        case .gemini:
+            return Color(red: 0.42, green: 0.62, blue: 0.98)
         }
     }
 
@@ -27,6 +30,7 @@ extension Provider {
         switch self {
         case .codex: return "ProviderOpenAI"
         case .claude: return "ProviderClaude"
+        case .gemini: return "ProviderGemini"
         }
     }
 }
@@ -90,12 +94,14 @@ struct ProviderBrandBadge: View {
 private enum ProviderBrandArtwork {
     private static let openAI = load(resource: Provider.codex.artworkResourceName)
     private static let claude = load(resource: Provider.claude.artworkResourceName)
+    private static let gemini = load(resource: Provider.gemini.artworkResourceName)
 
     /// Return cached artwork for a provider without reading credential or app state.
     static func image(for provider: Provider) -> NSImage? {
         switch provider {
         case .codex: return openAI
         case .claude: return claude
+        case .gemini: return gemini
         }
     }
 

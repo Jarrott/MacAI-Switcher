@@ -1,0 +1,21 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g clip-path="url(#clip0_gemini)">
+<rect width="128" height="128" rx="30" fill="url(#bg_gemini)"/>
+<path d="M64 18C66.9 43.2 84.8 61.1 110 64C84.8 66.9 66.9 84.8 64 110C61.1 84.8 43.2 66.9 18 64C43.2 61.1 61.1 43.2 64 18Z" fill="url(#star_gemini)"/>
+</g>
+<defs>
+<linearGradient id="bg_gemini" x1="16" y1="8" x2="112" y2="120" gradientUnits="userSpaceOnUse">
+<stop stop-color="#1E3A8A" stop-opacity="0.72"/>
+<stop offset="0.52" stop-color="#312E81" stop-opacity="0.72"/>
+<stop offset="1" stop-color="#172554" stop-opacity="0.82"/>
+</linearGradient>
+<linearGradient id="star_gemini" x1="26" y1="26" x2="104" y2="104" gradientUnits="userSpaceOnUse">
+<stop stop-color="#60A5FA"/>
+<stop offset="0.45" stop-color="#818CF8"/>
+<stop offset="1" stop-color="#C084FC"/>
+</linearGradient>
+<clipPath id="clip0_gemini">
+<rect width="128" height="128" rx="30" fill="white"/>
+</clipPath>
+</defs>
+</svg>

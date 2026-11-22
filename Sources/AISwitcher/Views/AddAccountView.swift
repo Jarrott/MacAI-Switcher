@@ -11,6 +11,7 @@ struct AddAccountView: View {
     @State private var provider: Provider = .codex
     @State private var isImporting = false
     @State private var isBrowserLoggingIn = false
+    @State private var agyRecorderEnabled = false
     @State private var browserLoginTask: Task<Void, Never>?
     @State private var feedback: Feedback?
 
@@ -63,7 +64,7 @@ struct AddAccountView: View {
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text(loc.string("add_account.login_instructions"))
+                    Text(instructionsText)
                         .font(.callout)
                         .foregroundStyle(.secondary)
 
@@ -85,18 +86,41 @@ struct AddAccountView: View {
             }
 
             VStack(alignment: .leading, spacing: 10) {
-                Button {
-                    browserLoginTask = Task { await loginWithBrowser() }
-                } label: {
-                    Label(
-                        loc.string("add_account.browser_login"),
-                        systemImage: "safari"
-                    )
-                    .frame(maxWidth: .infinity)
+                if showsAntigravityAction {
+                    Button {
+                        enableOrSyncAntigravity()
+                    } label: {
+                        Label(
+                            loc.string(
+                                agyRecorderEnabled
+                                    ? "add_account.agy_sync"
+                                    : "add_account.agy_enable"
+                            ),
+                            systemImage: agyRecorderEnabled
+                                ? "arrow.triangle.2.circlepath"
+                                : "waveform.path.ecg"
+                        )
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(isBusy)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(isBusy)
+
+                if showsBrowserLoginAction {
+                    Button {
+                        browserLoginTask = Task { await loginWithBrowser() }
+                    } label: {
+                        Label(
+                            loc.string("add_account.browser_login"),
+                            systemImage: "safari"
+                        )
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(isBusy)
+                }
 
                 Button {
                     Task { await importCurrentLogin() }
@@ -161,17 +185,56 @@ struct AddAccountView: View {
             }
         }
         .padding(24)
-        .frame(width: 520, height: 430)
+        .frame(width: 520, height: 450)
         .environment(\.locale, loc.locale)
-        .onChange(of: provider) { _, _ in feedback = nil }
+        .onAppear { agyRecorderEnabled = accounts.isAntigravityRecorderInstalled }
+        .onChange(of: provider) { _, _ in
+            feedback = nil
+            agyRecorderEnabled = accounts.isAntigravityRecorderInstalled
+        }
         .onDisappear {
             browserLoginTask?.cancel()
             browserLoginTask = nil
         }
     }
 
+    private var showsAntigravityAction: Bool {
+        provider == .gemini && accounts.isAntigravityCLIInstalled
+    }
+
+    private var showsBrowserLoginAction: Bool {
+        provider != .gemini || accounts.isGeminiCLIInstalled || !accounts.isAntigravityCLIInstalled
+    }
+
+    private var instructionsText: String {
+        if provider == .gemini && accounts.isAntigravityCLIInstalled {
+            return loc.string("add_account.agy_instructions")
+        }
+        return loc.string("add_account.login_instructions")
+    }
+
     private var loginCommand: String {
-        provider.loginCommand
+        if provider == .gemini && accounts.isAntigravityCLIInstalled
+            && !accounts.isGeminiCLIInstalled
+        {
+            return "agy"
+        }
+        return provider.loginCommand
+    }
+
+    /// Install/verify the documented `agy` statusLine hook and sync any recorded usage.
+    private func enableOrSyncAntigravity() {
+        do {
+            let results = try accounts.enableAntigravityRecorder()
+            agyRecorderEnabled = accounts.isAntigravityRecorderInstalled
+            if let first = results.first {
+                feedback = successFeedback(for: first)
+            } else {
+                feedback = .information(loc.string("add_account.agy_enabled_waiting"))
+            }
+        } catch {
+            feedback = .failure(loc.string("add_account.agy_install_failed"))
+        }
     }
 
     private var isBusy: Bool {
@@ -254,10 +317,10 @@ struct AddAccountView: View {
     /// - Side effects: Codex has none because its temporary home never touched the
     ///   live credential; non-isolated providers restore the captured snapshot.
     private func rollbackMessage(rollbackAccount: Account?, original: String) -> String {
+        guard let rollbackAccount else { return original }
         if CLIBrowserLoginService.isolatedHomeEnvironmentVariable(for: provider) != nil {
             return original + " " + loc.string("add_account.browser_restored")
         }
-        guard let rollbackAccount else { return original }
         if accounts.rollbackBrowserLogin(to: rollbackAccount) {
             return original + " " + loc.string("add_account.browser_restored")
         }
@@ -325,7 +388,11 @@ struct AddAccountView: View {
 
     private func localizedMessage(for error: CLIBrowserLoginService.LoginError) -> String {
         switch error {
-        case .executableNotFound: return loc.string("add_account.browser_cli_missing")
+        case .executableNotFound:
+            if provider == .gemini {
+                return loc.string("add_account.browser_cli_missing.gemini")
+            }
+            return loc.string("add_account.browser_cli_missing")
         case .launchFailed: return loc.string("add_account.browser_launch_failed")
         case .runtimeNotFound: return loc.string("add_account.browser_runtime_missing")
         case .stagingUnavailable: return loc.string("add_account.browser_staging_failed")

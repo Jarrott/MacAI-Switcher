@@ -15,7 +15,7 @@ struct AccountSwitcherPopover: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(accounts.accounts) { account in
+            ForEach(accounts.orderedAccounts) { account in
                 Button {
                     onSelect(account)
                 } label: {
