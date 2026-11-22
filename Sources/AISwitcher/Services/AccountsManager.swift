@@ -64,8 +64,8 @@ final class AccountsManager {
     private let codexStore: CodexCredentialStore
     /// Gemini paths are injectable so import/recovery tests never touch real credentials.
     private let geminiStore: GeminiCredentialStore
-    /// Antigravity (`agy`) statusLine usage cache store; injectable for tests.
-    private let antigravityStore: AntigravityUsageStore
+    /// Antigravity (`agy`) statusLine usage cache store; `nil` in ephemeral mode unless injected.
+    private let antigravityStore: AntigravityUsageStore?
     /// Usage transport, injected so refresh behavior is testable without network.
     private let fetchUsage: @Sendable (Account) async throws -> Usage
 
@@ -75,7 +75,7 @@ final class AccountsManager {
         claudeStore: ClaudeCredentialStore = .shared,
         codexStore: CodexCredentialStore = .shared,
         geminiStore: GeminiCredentialStore = .shared,
-        antigravityStore: AntigravityUsageStore = .shared,
+        antigravityStore: AntigravityUsageStore? = nil,
         fetchUsage: @escaping @Sendable (Account) async throws -> Usage = {
             try await UsageService.fetch(for: $0)
         }
@@ -84,7 +84,7 @@ final class AccountsManager {
         self.claudeStore = claudeStore
         self.codexStore = codexStore
         self.geminiStore = geminiStore
-        self.antigravityStore = antigravityStore
+        self.antigravityStore = antigravityStore ?? (ephemeral ? nil : .shared)
         self.fetchUsage = fetchUsage
         if let persistenceURL {
             try? FileManager.default.createDirectory(
@@ -172,14 +172,14 @@ final class AccountsManager {
             return Calendar(identifier: .gregorian).date(from: c) ?? Date(timeIntervalSince1970: 0)
         }
         var a = Account(
-            provider: .codex, label: "tmtdeveloper1", email: nil,
+            provider: .codex, label: "alice_dev", email: nil,
             plan: .pro, accountID: "mock-1", credentialSnapshot: nil)
         a.usage = Usage(
             fiveHour: UsageWindow(usedFraction: 0.65, resetsAt: date(8)),
             sevenDay: UsageWindow(usedFraction: 0.93, resetsAt: date(8)),
             resetsAvailable: 0, fetchedAt: Date())
         var b = Account(
-            provider: .codex, label: "jarrott999", email: nil,
+            provider: .codex, label: "bob_codex", email: nil,
             plan: .pro, accountID: "mock-2", credentialSnapshot: nil)
         b.usage = Usage(
             fiveHour: UsageWindow(usedFraction: nil, resetsAt: nil),
@@ -240,12 +240,12 @@ final class AccountsManager {
     /// A missing provider credential clears only that provider's active marker.
     /// Whether Antigravity CLI (`agy`) is installed on this Mac.
     var isAntigravityCLIInstalled: Bool {
-        antigravityStore.isCLIInstalled()
+        (antigravityStore ?? .shared).isCLIInstalled()
     }
 
     /// Whether Antigravity (`agy`) `statusLine` usage recording is configured.
     var isAntigravityRecorderInstalled: Bool {
-        antigravityStore.isRecorderInstalled()
+        antigravityStore?.isRecorderInstalled() ?? false
     }
 
     /// Whether Gemini CLI (`gemini`) is installed on this Mac.
@@ -256,14 +256,15 @@ final class AccountsManager {
     /// Install the documented `agy` `statusLine` recorder hook and sync any recorded accounts.
     @discardableResult
     func enableAntigravityRecorder() throws -> [ImportResult] {
-        try antigravityStore.installRecorder()
+        guard let store = antigravityStore else { return [] }
+        try store.installRecorder()
         return syncAntigravityAccounts()
     }
 
     /// Reconcile every locally recorded Antigravity (`agy`) account snapshot without network calls.
     @discardableResult
     func syncAntigravityAccounts() -> [ImportResult] {
-        guard let file = antigravityStore.loadFile() else { return [] }
+        guard let file = antigravityStore?.loadFile() else { return [] }
         let sortedSnapshots = file.accounts.values.sorted {
             $0.email.localizedCaseInsensitiveCompare($1.email) == .orderedAscending
         }
@@ -845,7 +846,7 @@ final class AccountsManager {
             let email = account.email
                 ?? AntigravityUsageStore.email(fromAccountID: account.accountID)
         {
-            _ = antigravityStore.removeAccount(email: email)
+            _ = antigravityStore?.removeAccount(email: email)
         }
         accounts.removeAll { $0.id == account.id }
         refreshErrors.removeValue(forKey: account.id)
@@ -893,7 +894,8 @@ final class AccountsManager {
                 group.addTask {
                     do {
                         if account.provider == .gemini,
-                            AntigravityUsageStore.isAntigravityAccountID(account.accountID)
+                            AntigravityUsageStore.isAntigravityAccountID(account.accountID),
+                            let agyStore
                         {
                             let usage = try UsageService.fetchAntigravity(
                                 account, store: agyStore)

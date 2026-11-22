@@ -183,14 +183,14 @@ final class UsageParsingTests: XCTestCase {
     func testCodexLabelPrefersEmailLocalPartOverProfileName() {
         XCTAssertEqual(
             AccountsManager.preferredCodexLabel(
-                email: "tmtdeveloper1@example.com",
-                name: "Ho Developer"
+                email: "alice_dev@example.com",
+                name: "Alice Developer"
             ),
-            "tmtdeveloper1"
+            "alice_dev"
         )
         XCTAssertEqual(
-            AccountsManager.preferredCodexLabel(email: nil, name: "JO Developer"),
-            "JO"
+            AccountsManager.preferredCodexLabel(email: nil, name: "Bob Developer"),
+            "Bob"
         )
     }
 

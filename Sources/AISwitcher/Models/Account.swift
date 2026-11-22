@@ -183,7 +183,7 @@ struct Usage: Codable, Equatable {
 struct Account: Identifiable, Codable, Equatable {
     var id: UUID = UUID()
     var provider: Provider
-    /// Display handle, e.g. "tmtdeveloper1".
+    /// Display handle, e.g. "alice_dev".
     var label: String
     /// Optional user override. Provider discovery only updates the generated label.
     var customLabel: String? = nil
