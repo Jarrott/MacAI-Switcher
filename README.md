@@ -1,42 +1,57 @@
 # AI Switcher
 
-**Switch Codex, Claude, and Gemini accounts from your Mac’s menu bar.**
+**Track quota, switch accounts, and organize Codex, Claude, and Gemini logins from your Mac’s menu bar.**
 
-Keep multiple CLI logins in one place, see their remaining quota, reorder
-accounts and provider sections by dragging, and choose the account you want to
-use next. Built with SwiftUI and AppKit for macOS, with English and Simplified
-Chinese interfaces.
+Keep multiple AI CLI logins in one compact native menu-bar panel—view remaining
+capacity and reset dates, track Gemini usage from **Antigravity CLI (`agy`)** or
+**Gemini CLI (`gemini`)**, drag to reorder accounts and provider sections, and
+switch active credentials independently. Built with Swift 6, SwiftUI, and AppKit
+for macOS 14+, with English and Simplified Chinese interfaces.
 
 **English** · [简体中文](README.zh-CN.md)
 
-[Quick start](#quick-start) · [Usage](#usage) · [Compatibility](#compatibility) ·
-[Troubleshooting](#troubleshooting) · [Development](#development) · [Documentation](#documentation)
+[Features](#features) · [Quick start](#quick-start) · [Usage](#usage) ·
+[Compatibility](#compatibility) · [Local data](#local-data-and-credentials) ·
+[Troubleshooting](#troubleshooting) · [Development](#development) ·
+[Documentation](#documentation)
 
 <p align="center">
-  <img src="docs/images/menu-preview.png" alt="AI Switcher menu showing Codex and Claude accounts, remaining quota, reset dates, and account actions in Chinese" width="360">
+  <img src="docs/images/menu-preview-en.png" alt="AI Switcher menu showing OpenAI Codex, Anthropic Claude, and Google Gemini sections with remaining quota bars, reset dates, drag handles, and menu actions" width="360">
 </p>
 
 ## Features
 
-- **Multiple accounts, three providers.** Keep one Codex, one Claude, and one
-  Gemini account active independently. Switch from an account’s title or the
-  account submenu.
-- **Quota at a glance.** View remaining 5-hour and 7-day capacity for Codex and
-  Claude, Pro and Flash daily model quota for Gemini, reset dates, and plan
-  information when the provider supplies them.
-- **Drag-and-drop ordering.** Reorder accounts within each provider section and
-  reorder provider sections directly in the menu-bar dropdown or in Account
-  Settings; the saved order persists across launches and syncs to the hover
-  submenu.
-- **Three ways to add accounts.** Sign in through the installed CLI’s browser
-  flow, import its current login, or import a credential JSON file.
-- **Credential recovery.** Refresh expired OAuth tokens and reconcile matching
-  CLI token rotations. Reauthorize an existing account without deleting its row.
-- **Codex reset credits.** View available credits and redeem one only after an
-  explicit confirmation, when supported by the account.
-- **Native desktop controls.** Automatic usage refresh every five minutes,
-  manual refresh, custom account names, launch at login, persistent total runtime,
-  and instant language switching.
+- **Three providers, independent active slots.** Manage **OpenAI Codex**,
+  **Anthropic Claude**, and **Google Gemini** in one menu bar app, each tracking
+  its own active account independently.
+- **Gemini via Antigravity (`agy`) and Gemini CLI (`gemini`).**
+  - **Antigravity CLI (`agy`)**: one-click setup installs a minimal `statusLine`
+    hook that automatically records each signed-in Google account’s email, plan
+    tier, and 5-hour / 7-day Gemini quota—without reading Keychain secrets or
+    conversation data.
+  - **Gemini CLI (`@google/gemini-cli`)**: discovers, snapshots, switches, and
+    refreshes `~/.gemini/oauth_creds.json` accounts and fetches Pro / Flash
+    daily quota buckets.
+- **Drag-and-drop ordering everywhere.** Drag provider section headers to
+  reorder sections (Codex / Claude / Gemini) and drag account cards to reorder
+  logins within each provider—in both the menu-bar dropdown and **Account
+  Settings** (plus keyboard-accessible move controls). Saved order persists in
+  `accounts.json` and stays synchronized with the hover account submenu.
+- **Quota at a glance.** Color-coded segmented bars show **remaining capacity**
+  (red below 10%, yellow 10%–50%, green above 50%), reset dates, and plan
+  badges. Unavailable values always remain `--%` / `--` and are never faked as
+  zero.
+- **Flexible account onboarding & recovery.** Add logins via one-click
+  Antigravity (`agy`) tracking, isolated browser OAuth (`codex` / `gemini`) or
+  CLI OAuth (`claude`), importing the current CLI login, or importing a
+  credential JSON file. Expired tokens refresh automatically, matching CLI
+  rotations are adopted, and reauthorizing an account updates it in place.
+- **Confirmed Codex reset credits.** View available Codex manual reset credits
+  and redeem one only after an explicit confirmation alert.
+- **Native macOS experience.** Translucent AppKit menu panel, 5-minute
+  background refresh, manual refresh (`⌘R`), custom account names, Launch at
+  Login (`⌘L`), persistent SQLite total runtime, and instant English / Chinese
+  switching. Zero third-party Swift package dependencies.
 
 ## Quick start
 
@@ -45,155 +60,192 @@ Chinese interfaces.
 | Requirement | Details |
 | --- | --- |
 | Operating system | macOS 14 Sonoma or later |
-| Build tools | Swift 6.0+ and a macOS SDK, supplied by a compatible Xcode or Command Line Tools installation |
-| Provider login | A Codex ChatGPT OAuth login, a Claude Code OAuth login, and/or a Gemini CLI Google OAuth login |
-| Browser sign-in | The corresponding `codex`, `claude`, or `gemini` CLI must be installed |
-| Network | Required for browser sign-in, usage refresh, and reset-credit redemption |
+| Build tools | Swift 6.0+ and a macOS SDK (Xcode or Command Line Tools) |
+| Providers | Any combination of Codex CLI (`codex`), Claude Code (`claude`), Antigravity CLI (`agy`), and/or Gemini CLI (`gemini`) |
+| Network | Required for browser OAuth, Codex/Claude/Gemini CLI quota refresh, and Codex reset credits |
 
-The Swift package has no third-party package dependencies and uses the system
-SQLite library. You only need the provider you intend to use.
+You only need the providers you actually use.
 
 ### Build and launch
+
+Run from the repository root:
 
 ```bash
 git clone https://github.com/Jarrott/MacAI-Switcher.git
 cd MacAI-Switcher
 ./build-app.sh release
-open ".build/release/AI Switcher.app"
+open "$(swift build -c release --show-bin-path)/AI Switcher.app"
 ```
 
-If you already have a checkout, run the last two commands from its root directory.
-The script builds the executable, bundles artwork and translations, and attempts
-ad-hoc signing. `swift build` alone does not assemble the `.app` bundle.
+If you already have a local checkout, run the last two commands from its root
+directory (where `Package.swift` lives). `./build-app.sh release` builds the
+production binary, bundles artwork and translations, and ad-hoc signs the app;
+`swift build` alone does not assemble the `.app` bundle.
 
-Look for the switching icon in the **macOS menu bar**; the app has no Dock icon or
-main window. For regular use, quit the app, copy `AI Switcher.app` to Applications
-in Finder, and launch that copy. Enable **Launch at Login** from its menu if desired.
+Look for the switch icon in the **macOS menu bar** (there is no Dock icon or
+main window). For everyday use, quit the app, copy `AI Switcher.app` into
+`/Applications` in Finder, and launch that copy. Enable **Launch at Login** from
+the menu if desired.
 
 ## Usage
 
-### Add your first account
+### Add accounts
 
-At startup, AI Switcher looks for existing logins in the supported credential
-stores. To add or repair a login, open **Add Account**, select **Codex**,
-**Claude**, or **Gemini**, and choose an option:
+At startup, AI Switcher discovers existing logins from supported local stores.
+To add another account or enable Gemini tracking, open **Add Account** (`⌘N`),
+pick **Codex**, **Claude**, or **Gemini**, and choose an action:
 
-| Option | When to use it | Result |
+| Action | Best for | Result |
 | --- | --- | --- |
-| **Sign In with Browser** | Add another login or authorize an expired one | Runs the provider CLI’s OAuth flow, then imports and activates the validated login |
-| **Import Current Login** | The CLI is already signed in | Saves or updates that login and marks it active for the provider |
-| **Import Credential File** | You have a compatible provider credential JSON file | Validates and saves it; the current CLI login is not replaced until you activate it |
+| **Enable Antigravity (`agy`) Usage Recording** | Tracking Gemini quota from `agy` | Installs the documented `statusLine` hook into `~/.gemini/antigravity-cli/settings.json` and syncs recorded `agy` accounts |
+| **Sign In with Browser** | Adding or reauthorizing `codex`, `claude`, or `gemini` CLI | Runs the installed CLI’s official browser OAuth flow, then imports and activates the validated login |
+| **Import Current Login** | CLI is already signed in (or `agy` has recorded usage) | Snapshots or updates the current login and marks it active for its provider |
+| **Import Credential File…** | Importing an exported credential JSON | Validates and snapshots the file without replacing your active CLI login |
 
-For a terminal-based login, use the appropriate command, then select
-**Import Current Login**:
+Manual terminal login commands:
 
 ```bash
 codex login          # Codex / ChatGPT
 claude auth login    # Claude Code
+agy                  # Antigravity CLI (keychain Google sign-in; use /usage to check quota)
 gemini               # Gemini CLI (Sign in with Google)
 ```
 
-Repeat for additional accounts. **Account Settings** lets you rename accounts,
-drag-and-drop reorder accounts and provider sections, activate a saved login,
-remove an inactive account after confirmation, and choose the interface
-language. Active accounts cannot be removed until you switch away.
+### Track Gemini usage with Antigravity CLI (`agy`)
+
+When `agy` is installed on your Mac:
+
+1. Open **Add Account → Gemini** and click **Enable Antigravity (`agy`) Usage Recording**.
+   - AI Switcher writes an owner-only script (`agy-statusline-hook.sh`) and adds
+     it to `~/.gemini/antigravity-cli/settings.json` with
+     `stack_with_default: true`.
+   - All existing `agy` settings remain untouched, the built-in status line
+     stays visible, and any pre-existing custom `statusLine.command` is chained.
+2. Start a new `agy` session (or run `/statusline` in an open session), then
+   send a prompt or run `/usage`.
+3. Open the AI Switcher menu bar icon or press **Refresh Now (`⌘R`)** to see
+   your recorded **Google / Gemini** email, plan badge, 5-hour / 7-day
+   remaining quota bars, and reset dates.
+
+`agy` manages its own OS keyring sign-in. To switch Google accounts in `agy`,
+run `/logout` inside `agy` and sign in again—AI Switcher keeps a separate card
+for each recorded Google account automatically.
+
+### Reorder accounts and provider sections
+
+- **In the menu-bar dropdown**:
+  - Drag any **provider section header** (OpenAI / Anthropic / Google) up or
+    down to reorder provider groups.
+  - Drag an account card’s **trailing drag handle (`≡`)** or its display-only
+    **usage rows** to reorder accounts within that provider. Clicking the
+    account title row continues to switch accounts normally.
+- **In Account Settings**:
+  - Drag account rows within each provider section to reorder them.
+  - Drag provider section headers—or use the keyboard-accessible **↑ / ↓**
+    buttons—to reorder sections.
+- **Persistence & sync**: ordering is saved to `accounts.json` immediately,
+  preserved across refreshes, re-logins, and restarts, and reflected across the
+  menu dropdown, hover account submenu, and **Account Settings**.
 
 ### Switch accounts
 
-1. Click an account’s **title**, or hover **Account Settings** and select a login.
-2. Check the **✓** beside the selected account. Codex, Claude, and Gemini each
-   have their own active selection.
-3. Start a CLI session that loads the selected credential.
+1. Click an account’s **title row**, or hover **Account Settings** and choose a
+   login from the submenu.
+2. Confirm the **✓** beside the active account. Codex, Claude, and Gemini each
+   maintain their own active selection.
+3. Launch a CLI session that loads the selected credential.
 
-The app snapshots the current live credential before replacing it. An existing
-CLI session or shared background server may still hold its previous login;
-the checkmark confirms credential selection, not a running session’s identity.
-See [Codex terminal integration](docs/CODEX_TERMINALS.md) for the optional zsh
-launcher, shared-server behavior, and safe session restart instructions.
+Before replacing a live credential, AI Switcher snapshots the current live
+credential so CLI token rotations are never lost. Already-running CLI sessions
+or shared background daemons may continue using their previous login until
+restarted; see [Codex terminal integration](docs/CODEX_TERMINALS.md) for the
+optional zsh wrapper and session recovery steps.
 
-### Read usage and reset credits
+### Read usage, reset credits, and shortcuts
 
-Percentages show **remaining quota**: red below 10%, yellow from 10% through 50%,
-and green above 50%. Missing usage or reset dates appear as `--%` / `--`.
-Unavailable reset-credit data is never treated as zero.
+- Percentages represent **remaining quota**: red `< 10%`, yellow `10%–50%`,
+  green `> 50%`. Missing values stay `--%` / `--`.
+- Usage bars and dates are display-only (and draggable when reordering).
+- A positive Codex reset-credit count renders as a separate row that opens an
+  explicit confirmation alert before consuming a credit.
+- Refresh errors retain the last successful usage snapshot alongside an inline
+  warning so cached values are never wiped out by transient network issues.
 
-Usage bars and dates are read-only. A positive Codex reset-credit row opens a
-confirmation dialog; only confirming sends the redemption request. Refresh
-failures retain the last successful usage snapshot and display an account error,
-so cached values may be out of date.
-
-With the menu open:
+Keyboard shortcuts while the menu is open:
 
 | Shortcut | Action |
 | --- | --- |
 | `⌘N` | Add Account |
 | `⌘R` | Refresh Now |
 | `⌘L` | Toggle Launch at Login |
-| `⌘Q` | Quit |
+| `⌘Q` | Quit AI Switcher |
 
 ## Compatibility
 
 | Capability | Codex / OpenAI | Claude / Anthropic | Gemini / Google |
 | --- | --- | --- | --- |
-| Managed login | ChatGPT OAuth through Codex CLI | Claude Code OAuth | Antigravity CLI (`agy`) usage recording and/or Gemini CLI Google OAuth |
-| Live credential / source | `~/.codex/auth.json` | macOS Keychain service `Claude Code-credentials` | Documented `agy` `statusLine` hook (`antigravity-usage.json`) and/or `~/.gemini/oauth_creds.json` |
-| Additional local data | Account identity from the credential | File fallback at `~/.claude/.credentials.json`; identity read from `~/.claude.json` | Preserves existing `~/.gemini/antigravity-cli/settings.json`; syncs `~/.gemini/google_accounts.json` for Gemini CLI |
-| Usage | 5-hour / 7-day windows when returned | 5-hour / 7-day windows when returned | 5-hour / 7-day windows for `agy`; Pro / Flash daily buckets for `gemini` CLI |
-| Manual reset credits | When available from the provider | Not supported | Not supported |
-| Active accounts | One | One, independent | One, independent |
+| Supported CLI | Codex CLI (`codex`) | Claude Code (`claude`) | Antigravity CLI (`agy`) and/or Gemini CLI (`gemini`) |
+| Credential / data source | `~/.codex/auth.json` | macOS Keychain `Claude Code-credentials` | `agy` `statusLine` cache (`antigravity-usage.json`) and/or `~/.gemini/oauth_creds.json` |
+| Additional local files | Identity parsed from credential JWT | Fallback `~/.claude/.credentials.json`; read-only `~/.claude.json` | `~/.gemini/antigravity-cli/settings.json` (`agy`); `~/.gemini/google_accounts.json` (`gemini`) |
+| Quota windows | 5-hour / 7-day | 5-hour / 7-day | 5-hour / 7-day (`agy`); Pro / Flash daily (`gemini`) |
+| Account switching | Supported (isolated `CODEX_HOME` OAuth) | Supported (system Keychain writer) | Supported for `gemini` CLI (`GEMINI_CLI_HOME`); `agy` switches via `/logout` |
+| Manual reset credits | Supported when provided | Not supported | Not supported |
+| Independent active slot | Yes | Yes | Yes |
 
-Codex credentials stored only in the OS keyring or under a custom `CODEX_HOME`
-are not managed by the current store. API-key-only profiles are not supported by
-the account import flow. Claude switching requires a writable, initialized
-Keychain login item; a fallback file alone cannot complete a macOS switch.
-Gemini token refresh resolves the public desktop OAuth client from the local
-`gemini` CLI installation (or `GEMINI_OAUTH_CLIENT_ID` /
-`GEMINI_OAUTH_CLIENT_SECRET`); no OAuth client secret is embedded in this app.
+Notes:
 
-Usage and reset-credit integrations rely on undocumented provider backend APIs,
-which can change. Available fields and actions depend on the account and provider
-response. Request formats and recovery behavior are documented in [API.md](docs/API.md).
+- Codex OS-keyring-only credentials, custom `CODEX_HOME` paths, and API-key-only
+  profiles are not managed by the Codex store.
+- Claude switching requires an initialized, writable Keychain item; a fallback
+  file alone cannot complete a switch on macOS.
+- Gemini CLI token refresh resolves public desktop OAuth client metadata from
+  the local `gemini` CLI package (or `GEMINI_OAUTH_CLIENT_ID` /
+  `GEMINI_OAUTH_CLIENT_SECRET`); no OAuth client secret is stored in this
+  repository.
+- Codex, Claude, and Gemini CLI usage endpoints are undocumented provider
+  backend APIs and may change; `agy` uses its officially documented `statusLine`
+  contract. Details are in [API.md](docs/API.md).
 
 ## Local data and credentials
 
 App-managed data lives under `~/Library/Application Support/AISwitcher/`:
 
-| Path | Contents |
-| --- | --- |
-| `accounts.json` | Account metadata, custom names, saved account/section order, active selections, and cached usage |
-| `codex-accounts/` | Saved Codex credential snapshots |
-| `claude-accounts/` | Saved Claude credential snapshots |
-| `gemini-accounts/` | Saved Gemini credential snapshots |
-| `runtime.sqlite` | Accumulated app runtime in milliseconds; no credentials or event history |
+| Path | Permissions | Contents |
+| --- | --- | --- |
+| `accounts.json` | User | Account metadata, custom names, saved account/section order, active selections, and cached usage |
+| `codex-accounts/` | `0700` / `0600` | Saved Codex credential snapshots |
+| `claude-accounts/` | `0700` / `0600` | Saved Claude credential snapshots |
+| `gemini-accounts/` | `0700` / `0600` | Saved Gemini CLI credential snapshots |
+| `antigravity-usage.json` | `0600` | Sanitized `agy` usage snapshots (`email`, `plan_tier`, `quota`, timestamp only—no tokens, prompts, or paths) |
+| `agy-statusline-hook.sh` | `0700` | Recorder script invoked by `agy` `statusLine` |
+| `runtime.sqlite` | User | Accumulated app runtime in milliseconds; no credentials or event history |
 
-Credential snapshots are sensitive JSON files, written atomically with owner-only
-`0600` permissions inside `0700` snapshot directories. They are **not an encrypted
-vault**. Keep snapshots, live credentials, and account metadata out of commits,
-issue attachments, and shared screenshots.
+Credential snapshots are atomic owner-only (`0600`) JSON files, **not an
+encrypted vault**. Never commit snapshots, live credentials, or `accounts.json`
+to Git or attach them to bug reports.
 
-The app communicates directly with provider services for usage, token refresh,
-and confirmed reset actions. Claude credentials also use the macOS Keychain;
-`~/.claude.json` is read only. Codex browser sign-in runs in a temporary isolated
-`CODEX_HOME` and activates the new credential only after validation.
-
-Runtime is saved every minute and on normal exit; time while the app is closed
-does not count. See [database documentation](docs/DATABASE.md) for backup and
-rollback procedures.
+Codex (`CODEX_HOME`) and Gemini CLI (`GEMINI_CLI_HOME` with
+`GEMINI_FORCE_FILE_STORAGE=true`) browser OAuth runs inside temporary isolated
+directories so cancelling or failing never disrupts the active login. Runtime
+checkpoints every minute and on normal exit; see
+[DATABASE.md](docs/DATABASE.md) for schema and rollback details.
 
 ## Troubleshooting
 
 | Symptom | What to do |
 | --- | --- |
-| No window appears after launch | Open the menu-bar icon. This is a menu-bar app with no Dock icon. |
-| Browser sign-in cannot find a CLI | Confirm the chosen provider is installed and its login command runs in Terminal. You can sign in there, then use **Import Current Login**. |
-| Codex reports an expired login or 401 | Try **Refresh Now**, then import a valid current CLI login. If authorization was revoked, sign in with the browser to the **same account**; its row, custom name, and cached usage are retained. |
-| Claude cannot refresh or activate | Use **Import Current Login** for a valid CLI login, or sign in again. A missing Keychain item must first be initialized by Claude’s login flow. For permission errors or repeated prompts, see [Keychain recovery](docs/FUNCTIONAL.md#claude-keychain-recovery). |
-| A terminal still uses the previous Codex account | Follow [terminal integration and session recovery](docs/CODEX_TERMINALS.md). Already-running sessions are not switched automatically. |
-| Quota or reset credits show unavailable | Check the account error and refresh again. The provider may omit the field or reject the request; unavailable does not mean zero. |
+| `swift build --show-bin-path` says `Could not find Package.swift` | Run the command from the repository root (`cd /path/to/AI-Switcher`), or launch the built `.app` directly by its full path. |
+| No window appears after launch | Look for the switch icon in the macOS menu bar; this is a menu-bar-only app without a Dock icon. |
+| Gemini says `gemini` CLI is not installed | If you use **Antigravity CLI (`agy`)**, click **Enable Antigravity (`agy`) Usage Recording** instead. If you use **Gemini CLI**, install it via `npm install -g @google/gemini-cli` or `brew install gemini-cli`. |
+| Enabled `agy` recording, but no Gemini card appears yet | Open a fresh `agy` session (or run `/statusline` in an existing one) and send a prompt or run `/usage`, then click the AI Switcher menu bar icon or press `⌘R`. |
+| Codex reports an expired login or 401 | Press **Refresh Now (`⌘R`)**, or use **Import Current Login**. If authorization was revoked, sign in with the browser to the **same account**; its row, custom name, order, and cached usage are preserved. |
+| Claude cannot refresh or activate | Import a valid current CLI login or sign in again. A missing Keychain item must be created by Claude’s own login flow first. For permission prompts or ACL repair, see [Claude Keychain recovery](docs/FUNCTIONAL.md#claude-keychain-recovery). |
+| An already-open Codex terminal keeps using the old account | See [Codex terminal integration](docs/CODEX_TERMINALS.md); existing sessions do not switch automatically. |
+| Quota or reset credits show `--%` / unavailable | Check the inline account error and press `⌘R`. Missing fields remain unknown and are never converted to zero. |
 
 ## Development
 
-From the repository root, run the checks relevant to your change:
+From the repository root:
 
 ```bash
 swift format lint --configuration .swift-format --recursive Sources Tests Package.swift
@@ -201,70 +253,70 @@ swift test
 ./build-app.sh release
 ```
 
-Tests use synthetic provider payloads, injected transports, and isolated temporary
-storage. The regular suite does not require live provider credentials. Optional
-shell-integration and Keychain checks are described in the linked feature docs.
+All 103 unit tests use synthetic payloads, injected transports, and isolated
+temporary directories—no real accounts, Keychain items, or network calls are
+used.
 
-### UI previews
+### Offscreen UI previews
 
-After a release build, render both interface languages without opening the menu:
+After running `./build-app.sh release`, render English and Simplified Chinese
+previews without opening the live menu:
 
 ```bash
-AISWITCHER_RENDER=/tmp/aiswitcher-en.png AISWITCHER_LANG=en \
-  .build/release/AISwitcher
-AISWITCHER_RENDER=/tmp/aiswitcher-zh.png AISWITCHER_LANG=zh-Hans \
-  .build/release/AISwitcher
+BIN="$(swift build -c release --show-bin-path)/AI Switcher.app/Contents/MacOS/AISwitcher"
+AISWITCHER_RENDER=/tmp/aiswitcher-en.png AISWITCHER_LANG=en "$BIN"
+AISWITCHER_RENDER=/tmp/aiswitcher-zh.png AISWITCHER_LANG=zh-Hans "$BIN"
 ```
 
-Previews use synthetic accounts by default, require no provider requests, and do
-not change the runtime database. Additional environment options:
+Previews use synthetic data by default and do not modify `accounts.json` or
+`runtime.sqlite`. Optional environment variables:
 
 | Variable | Value | Purpose |
 | --- | --- | --- |
-| `AISWITCHER_SCENARIO` | `codex-auth-error` | Preview the Codex authentication error state |
-| `AISWITCHER_SURFACE` | `account-switcher` | Render the account submenu |
-| `AISWITCHER_REAL` | `1` | Opt in to saved account/usage data; the image may contain personal information |
+| `AISWITCHER_SCENARIO` | `codex-auth-error` | Preview the Codex authentication recovery state |
+| `AISWITCHER_SURFACE` | `account-switcher` | Render the hover account submenu |
+| `AISWITCHER_REAL` | `1` | Render local persisted data (may contain personal information) |
 
 ### Project structure
 
 ```text
 Sources/AISwitcher/
   AISwitcherApp.swift     # App entry point and lifecycle
-  Models/                # Accounts, plans, usage windows, reset credits
-  Services/              # Account state, credential stores, provider HTTP, runtime
-  Views/                 # Menu panel, account management, native controls
-  Resources/             # Artwork and English / Simplified Chinese strings
-  PreviewRenderer.swift  # Offscreen UI previews
-Tests/AISwitcherTests/    # Usage, authentication, switching, and persistence tests
-scripts/                 # Optional Codex shell integration and validation tools
-patches/                 # Optional version-specific Codex client patches
-docs/                    # Functional, API, storage, and integration documentation
+  Models/                 # Accounts, providers, plans, usage windows, reset credits
+  Services/               # AccountsManager, credential & agy stores, OAuth/HTTP, runtime
+  Views/                  # Menu panel, drag-reorder geometry, settings, add-account UI
+  Resources/              # Provider SVGs, menu bar icon, en / zh-Hans localizations
+  PreviewRenderer.swift   # Offscreen English / Chinese UI previews
+Tests/AISwitcherTests/    # Usage parsing, Codex/Claude/Gemini/agy auth, reordering, runtime
+scripts/                  # Optional Codex shell integration and Keychain checks
+patches/                  # Optional version-specific Codex CLI patches
+docs/                     # Functional, API, database, and integration documentation
 ```
 
-Read [AGENTS.md](AGENTS.md) before contributing. Keep credential access in the
-provider stores and account state in `AccountsManager`; update both localizations
-for UI text and add synthetic parser tests for new provider response mappings.
-Keep both READMEs and the relevant feature docs in sync when behavior changes.
+See [AGENTS.md](AGENTS.md) for architecture and verification rules. Keep
+credential access inside `Services/*CredentialStore.swift`, state in
+`AccountsManager`, user-facing strings in both `en.lproj` and `zh-Hans.lproj`,
+and synthetic parser tests for every provider mapping.
 
 ## Documentation
 
 | Document | Covers |
 | --- | --- |
-| [Functional specification](docs/FUNCTIONAL.md) | Account flows, UI behavior, login recovery, and Claude Keychain repair |
-| [Provider API reference](docs/API.md) | Usage payloads, OAuth renewal, and reset-credit contracts |
-| [Local database](docs/DATABASE.md) | Runtime schema, migration, backup, and rollback |
+| [Functional specification](docs/FUNCTIONAL.md) | Account flows, drag reordering, UI behavior, login recovery, and Claude Keychain repair |
+| [Provider API reference](docs/API.md) | Codex, Claude, Gemini CLI, and Antigravity `statusLine` payload and OAuth contracts |
+| [Local database](docs/DATABASE.md) | Runtime SQLite schema, migrations, backup, and rollback |
 | [Codex terminal integration](docs/CODEX_TERMINALS.md) | Optional zsh launcher and existing-session handling |
 | [Codex status email repair](docs/CODEX_STATUS_EMAIL.md) | Optional client patch scoped to Codex 0.159.0 |
-| [Codex input extension](docs/CODEX_INPUT.md) | Optional rounded input and AI draft suggestions for that patched client |
-| [Changelog](CHANGELOG.md) | Implementation changes and fixes |
+| [Codex input extension](docs/CODEX_INPUT.md) | Optional rounded input frame and AI draft suggestions for that patched client |
+| [Changelog](CHANGELOG.md) | Detailed implementation changes and fixes |
 
-The Codex client patches are separate, optional extensions; building AI Switcher
-does not build or install a patched Codex CLI.
+The Codex client patches are independent, optional extensions; building AI
+Switcher does not compile or modify the Codex CLI.
 
 ## Project notes
 
-AI Switcher is an independent tool. OpenAI, Codex, Anthropic, Claude, and their
-artwork belong to their respective owners; their use identifies supported services
-and does not imply endorsement or partnership.
+AI Switcher is an independent tool. OpenAI, Codex, Anthropic, Claude, Google,
+Gemini, Antigravity, and their artwork belong to their respective owners; their
+use identifies supported services and does not imply endorsement or partnership.
 
 This repository does not currently include a license file.
